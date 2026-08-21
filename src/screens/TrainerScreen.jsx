@@ -210,9 +210,11 @@ function TranslateToUz({ ex, onDone }) {
 
 const RENDERERS = { assembly: Assembly, choice: Choice, fillBlank: FillBlank, translateToUz: TranslateToUz };
 
-export default function TrainerScreen({ onExit }) {
+export default function TrainerScreen({ onExit, topicFilter }) {
   const [index, setIndex] = useState(0);
   const [showBadge, setShowBadge] = useState(false);
+  // TODO: когда подключим getQueue из api.js — передавать topicFilter?.id как параметр,
+  // бэкенд вернёт слова только по этой теме вместо общей SRS-очереди
   const ex = QUEUE[index % QUEUE.length];
   const Renderer = RENDERERS[ex.type];
   const progress = (index % QUEUE.length) / QUEUE.length;
@@ -221,6 +223,15 @@ export default function TrainerScreen({ onExit }) {
     <div className="relative flex-1 flex flex-col overflow-hidden">
       {showBadge && <StagePopover stage={ex.wordStage} decay={0} onClose={() => setShowBadge(false)} />}
       <TopBar progress={progress} stage={ex.wordStage} onBadgeClick={() => setShowBadge(true)} onExit={onExit} />
+      {topicFilter && (
+        <div className="px-5 pb-2 shrink-0">
+          <div className="rounded-xl px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: tokens.cardActive, color: tokens.accentTeal }}>
+            {topicFilter.subLesson
+              ? `«${topicFilter.name}» · ${topicFilter.subLesson.label}`
+              : `Повтор темы «${topicFilter.name}»`}
+          </div>
+        </div>
+      )}
       <Renderer key={index} ex={ex} onDone={() => setIndex((i) => i + 1)} />
     </div>
   );
