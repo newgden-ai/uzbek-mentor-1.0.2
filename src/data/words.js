@@ -80,7 +80,7 @@ export const LEVELS = [
     subtitle: "3 370 слов · расширение словаря",
     topics: [
       { id: 5, name: "Числа от 100", count: 15, status: "locked" },
-      { id: 6, name: "Порядковые числительные", count: 10, status: "locked" },
+      { id: 6, name: "Числа. Порядковые числительные", count: 10, status: "locked" },
       { id: 12, name: "Самые важные глаголы — 3", count: 40, status: "locked" },
     ],
   },
@@ -89,15 +89,15 @@ export const LEVELS = [
     subtitle: "3 196 слов · беглая речь",
     topics: [
       { id: 7, name: "Числа. Дроби", count: 8, status: "locked" },
-      { id: 21, name: "Глаголы П", count: 83, status: "locked" },
+      { id: 62, name: "Черты характера. Личность", count: 59, status: "locked" },
     ],
   },
   {
     level: "B2",
     subtitle: "1 208 слов · свободное владение",
     topics: [
-      { id: 44, name: "Производство", count: 12, status: "locked" },
-      { id: 60, name: "Западная Европа", count: 90, status: "locked" },
+      { id: 106, name: "Производство", count: 55, status: "locked" },
+      { id: 117, name: "Отрасли и виды бизнеса", count: 70, status: "locked" },
     ],
   },
 ];
