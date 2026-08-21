@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from "react";
-import { Heart, Volume2, Check, RotateCcw, X, Lightbulb, SkipForward } from "lucide-react";
+import { Heart, Volume2, Check, RotateCcw, X, Lightbulb, SkipForward, Trophy } from "lucide-react";
 import { tokens } from "../theme.js";
 import { LandmarkStage, StagePopover } from "../components/LandmarkStage.jsx";
+import { buildPlacementQueue } from "../data/placement.js";
 
 // TODO: заменить на очередь упражнений от SRS-алгоритма (Apps Script API).
 // type: "assembly" | "translateToUz" | "choice" | "fillBlank"
@@ -177,7 +178,7 @@ function Assembly({ ex, onDone }) {
           <button onClick={check} disabled={answer.length === 0} className="w-full rounded-2xl py-4 font-extrabold text-[15px] tracking-wide" style={{ background: answer.length === 0 ? tokens.track : tokens.accentGradient, color: answer.length === 0 ? tokens.textSecondary : "#FBF9F4" }}>ПРОВЕРИТЬ</button>
         </div>
       )}
-      <FeedbackBar checked={checked} correctText={ex.correct.join(" ")} onNext={onDone} />
+      <FeedbackBar checked={checked} correctText={ex.correct.join(" ")} onNext={() => onDone(checked === "correct")} />
     </>
   );
 }
@@ -211,7 +212,7 @@ function Choice({ ex, onDone }) {
         </div>
       </div>
       <HelpersBar visible={helpersVisible} checked={checked} onHint={() => setHintUsed(true)} hintUsed={hintUsed} onSkip={skip} />
-      <FeedbackBar checked={checked} correctText={ex.options.find((o) => o.correct).text} onNext={onDone} />
+      <FeedbackBar checked={checked} correctText={ex.options.find((o) => o.correct).text} onNext={() => onDone(checked === "correct")} />
     </>
   );
 }
@@ -245,7 +246,7 @@ function FillBlank({ ex, onDone }) {
         </div>
       </div>
       <HelpersBar visible={helpersVisible} checked={checked} onHint={() => setHintUsed(true)} hintUsed={hintUsed} onSkip={skip} />
-      <FeedbackBar checked={checked} correctText={ex.correct} onNext={onDone} />
+      <FeedbackBar checked={checked} correctText={ex.correct} onNext={() => onDone(checked === "correct")} />
     </>
   );
 }
@@ -290,29 +291,68 @@ function TranslateToUz({ ex, onDone }) {
           <button onClick={check} disabled={!value.trim()} className="w-full rounded-2xl py-4 font-extrabold text-[15px] tracking-wide" style={{ background: !value.trim() ? tokens.track : tokens.accentGradient, color: !value.trim() ? tokens.textSecondary : "#FBF9F4" }}>ПРОВЕРИТЬ</button>
         </div>
       )}
-      <FeedbackBar checked={checked} correctText={ex.accept[0]} onNext={onDone} />
+      <FeedbackBar checked={checked} correctText={ex.accept[0]} onNext={() => onDone(checked === "correct")} />
     </>
   );
 }
 
 const RENDERERS = { assembly: Assembly, choice: Choice, fillBlank: FillBlank, translateToUz: TranslateToUz };
 
-export default function TrainerScreen({ onExit, topicFilter }) {
+function PlacementResult({ score, total, level, onFinish }) {
+  return (
+    <div className="flex-1 flex flex-col items-center justify-center px-8 text-center">
+      <div className="w-16 h-16 rounded-full flex items-center justify-center mb-4" style={{ background: tokens.accentGradient }}>
+        <Trophy size={28} color="#FBF9F4" />
+      </div>
+      <h1 className="text-2xl font-extrabold" style={{ color: tokens.textPrimary }}>Проверка пройдена</h1>
+      <p className="text-[14px] mt-2" style={{ color: tokens.textSecondary }}>
+        {score} из {total} верно — уровень {level} подтверждён, приложение подстроится под него
+      </p>
+      <button onClick={onFinish} className="mt-6 rounded-full px-8 py-3.5 font-bold text-[15px]" style={{ background: tokens.accentGradient, color: "#FBF9F4" }}>
+        В приложение
+      </button>
+    </div>
+  );
+}
+
+export default function TrainerScreen({ onExit, topicFilter, placementLevel, onFinishPlacement }) {
   const [index, setIndex] = useState(0);
   const [showBadge, setShowBadge] = useState(false);
+  const [score, setScore] = useState(0);
+  const isPlacement = Boolean(placementLevel);
+
   // TODO: когда подключим getQueue из api.js — передавать topicFilter?.id как параметр,
   // бэкенд вернёт слова только по этой теме вместо общей SRS-очереди.
   // TODO: onDone должен вызывать submitAnswer(wordId, correct) — "skipped" не засчитывается
   // ни в прогресс слова, ни в очки (по 1.2/2.3).
-  const ex = QUEUE[index % QUEUE.length];
+  const [queue] = useState(() => (isPlacement ? buildPlacementQueue(placementLevel) : QUEUE));
+  const finished = isPlacement && index >= queue.length;
+
+  if (finished) {
+    return <PlacementResult score={score} total={queue.length} level={placementLevel} onFinish={() => onFinishPlacement(placementLevel)} />;
+  }
+
+  const ex = isPlacement ? queue[index] : queue[index % queue.length];
   const Renderer = RENDERERS[ex.type];
-  const progress = (index % QUEUE.length) / QUEUE.length;
+  const progress = isPlacement ? index / queue.length : (index % queue.length) / queue.length;
+
+  const handleDone = (wasCorrect) => {
+    if (isPlacement && wasCorrect) setScore((s) => s + 1);
+    setIndex((i) => i + 1);
+  };
 
   return (
     <div className="relative flex-1 flex flex-col overflow-hidden">
       {showBadge && <StagePopover stage={ex.wordStage} decay={0} onClose={() => setShowBadge(false)} />}
       <TopBar progress={progress} stage={ex.wordStage} onBadgeClick={() => setShowBadge(true)} onExit={onExit} />
-      {topicFilter && (
+      {isPlacement && (
+        <div className="px-5 pb-2 shrink-0">
+          <div className="rounded-xl px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: tokens.cardActive, color: tokens.accentTeal }}>
+            Проверка уровня {placementLevel} · вопрос {index + 1} из {queue.length}
+          </div>
+        </div>
+      )}
+      {topicFilter && !isPlacement && (
         <div className="px-5 pb-2 shrink-0">
           <div className="rounded-xl px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: tokens.cardActive, color: tokens.accentTeal }}>
             {topicFilter.subLesson
@@ -321,7 +361,7 @@ export default function TrainerScreen({ onExit, topicFilter }) {
           </div>
         </div>
       )}
-      <Renderer key={index} ex={ex} onDone={() => setIndex((i) => i + 1)} />
+      <Renderer key={index} ex={ex} onDone={handleDone} />
     </div>
   );
 }
