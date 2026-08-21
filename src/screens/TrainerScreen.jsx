@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { Heart, Volume2, Check, RotateCcw, X } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { Heart, Volume2, Check, RotateCcw, X, Lightbulb, SkipForward } from "lucide-react";
 import { tokens } from "../theme.js";
 import { LandmarkStage, StagePopover } from "../components/LandmarkStage.jsx";
 
@@ -42,9 +42,22 @@ const QUEUE = [
     prompt: "Переведи на узбекский",
     source: "Ты откуда приехал?",
     accept: ["sen qayerdan kelding?", "sen qayerdan kelding"],
-    hint: "sen · qayerdan · kelding?",
+    word: "kelding", // слово, по которому даётся буквенная подсказка
   },
 ];
+
+// Через сколько мс появляются "Подсказка"/"Пропустить" — не сразу, чтобы дать
+// сначала попробовать самому.
+const HELPERS_DELAY_MS = 4000;
+
+function useHelpersVisible() {
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setVisible(true), HELPERS_DELAY_MS);
+    return () => clearTimeout(t);
+  }, []);
+  return visible;
+}
 
 function TopBar({ progress, stage, onBadgeClick, onExit }) {
   return (
@@ -66,21 +79,52 @@ function TopBar({ progress, stage, onBadgeClick, onExit }) {
   );
 }
 
+// Подсказка + Пропустить — общая полоска, появляется через HELPERS_DELAY_MS,
+// прячется как только задание уже проверено.
+function HelpersBar({ visible, checked, onHint, hintUsed, onSkip }) {
+  if (!visible || checked) return null;
+  return (
+    <div className="px-6 pb-2 flex items-center gap-2 shrink-0">
+      <button
+        onClick={onHint}
+        disabled={hintUsed}
+        className="flex items-center gap-1.5 px-3.5 py-2 rounded-full font-bold text-[12.5px]"
+        style={{ background: hintUsed ? tokens.track : tokens.card, color: hintUsed ? tokens.textSecondary : tokens.accentOchre }}
+      >
+        <Lightbulb size={14} /> Подсказка
+      </button>
+      <button
+        onClick={onSkip}
+        className="flex items-center gap-1.5 px-3.5 py-2 rounded-full font-bold text-[12.5px]"
+        style={{ background: tokens.card, color: tokens.textSecondary }}
+      >
+        <SkipForward size={14} /> Пропустить
+      </button>
+      {/* TODO: дневной лимит подсказок (3/10/безлимит для тарифов) — 1.1, считается на бэкенде по user_id */}
+    </div>
+  );
+}
+
 function FeedbackBar({ checked, correctText, onNext }) {
   if (!checked) return null;
+  const isCorrect = checked === "correct";
+  const isSkipped = checked === "skipped";
+  const bg = isCorrect ? tokens.correctBg : isSkipped ? tokens.track : tokens.wrongBg;
+  const fg = isCorrect ? tokens.correct : isSkipped ? tokens.textSecondary : tokens.wrong;
+
   return (
     <div className="px-4 pb-4 shrink-0">
-      <div className="rounded-2xl px-5 py-4 flex items-center justify-between" style={{ background: checked === "correct" ? tokens.correctBg : tokens.wrongBg }}>
+      <div className="rounded-2xl px-5 py-4 flex items-center justify-between" style={{ background: bg }}>
         <div className="flex items-center gap-3">
-          {checked === "correct" ? <Check size={22} color={tokens.correct} strokeWidth={3} /> : <RotateCcw size={20} color={tokens.wrong} />}
+          {isCorrect ? <Check size={22} color={fg} strokeWidth={3} /> : isSkipped ? <SkipForward size={20} color={fg} /> : <RotateCcw size={20} color={fg} />}
           <div>
-            <p className="font-extrabold text-[14px]" style={{ color: checked === "correct" ? tokens.correct : tokens.wrong }}>
-              {checked === "correct" ? "Точно!" : "Почти"}
+            <p className="font-extrabold text-[14px]" style={{ color: fg }}>
+              {isCorrect ? "Точно!" : isSkipped ? "Пропущено" : "Почти"}
             </p>
-            {checked === "wrong" && correctText && <p className="text-[12px]" style={{ color: tokens.textSecondary }}>Верно: {correctText}</p>}
+            {!isCorrect && correctText && <p className="text-[12px]" style={{ color: tokens.textSecondary }}>Верно: {correctText}</p>}
           </div>
         </div>
-        <button onClick={onNext} className="px-4 py-2 rounded-xl font-bold text-[13px]" style={{ background: checked === "correct" ? tokens.accentGradient : tokens.wrong, color: "#FBF9F4" }}>
+        <button onClick={onNext} className="px-4 py-2 rounded-xl font-bold text-[13px]" style={{ background: isCorrect ? tokens.accentGradient : isSkipped ? tokens.textSecondary : tokens.wrong, color: "#FBF9F4" }}>
           Дальше
         </button>
       </div>
@@ -92,10 +136,15 @@ function Assembly({ ex, onDone }) {
   const [bank, setBank] = useState(ex.bank);
   const [answer, setAnswer] = useState([]);
   const [checked, setChecked] = useState(null);
+  const [hintUsed, setHintUsed] = useState(false);
+  const helpersVisible = useHelpersVisible();
 
   const pickTile = (word, idx) => { if (checked) return; setAnswer([...answer, { word, key: idx }]); setBank(bank.filter((_, i) => i !== idx)); };
   const removeTile = (i) => { if (checked) return; setBank([...bank, answer[i].word]); setAnswer(answer.filter((_, idx) => idx !== i)); };
   const check = () => setChecked(answer.map((a) => a.word).join(" ") === ex.correct.join(" ") ? "correct" : "wrong");
+  const skip = () => setChecked("skipped");
+  // подсказка: подсвечиваем в банке слово, которое должно идти следующим
+  const nextCorrectWord = ex.correct[answer.length];
 
   return (
     <>
@@ -114,11 +163,15 @@ function Assembly({ ex, onDone }) {
           </div>
         </div>
         <div className="flex flex-wrap gap-2.5 justify-center mt-6">
-          {bank.map((word, i) => (
-            <button key={word + i} onClick={() => pickTile(word, i)} className="px-4 py-2.5 rounded-xl font-bold text-[14px]" style={{ background: tokens.card, color: tokens.textPrimary, border: `1px solid ${tokens.track}` }}>{word}</button>
-          ))}
+          {bank.map((word, i) => {
+            const isHinted = hintUsed && word === nextCorrectWord;
+            return (
+              <button key={word + i} onClick={() => pickTile(word, i)} className="px-4 py-2.5 rounded-xl font-bold text-[14px]" style={{ background: isHinted ? tokens.correctBg : tokens.card, color: isHinted ? tokens.correct : tokens.textPrimary, border: `1px solid ${isHinted ? tokens.correct + "70" : tokens.track}` }}>{word}</button>
+            );
+          })}
         </div>
       </div>
+      <HelpersBar visible={helpersVisible} checked={checked} onHint={() => setHintUsed(true)} hintUsed={hintUsed} onSkip={skip} />
       {!checked && (
         <div className="px-4 pb-4 shrink-0">
           <button onClick={check} disabled={answer.length === 0} className="w-full rounded-2xl py-4 font-extrabold text-[15px] tracking-wide" style={{ background: answer.length === 0 ? tokens.track : tokens.accentGradient, color: answer.length === 0 ? tokens.textSecondary : "#FBF9F4" }}>ПРОВЕРИТЬ</button>
@@ -132,7 +185,11 @@ function Assembly({ ex, onDone }) {
 function Choice({ ex, onDone }) {
   const [picked, setPicked] = useState(null);
   const [checked, setChecked] = useState(null);
+  const [hintUsed, setHintUsed] = useState(false);
+  const helpersVisible = useHelpersVisible();
+
   const check = (opt, i) => { if (checked) return; setPicked(i); setChecked(opt.correct ? "correct" : "wrong"); };
+  const skip = () => setChecked("skipped");
 
   return (
     <>
@@ -145,12 +202,15 @@ function Choice({ ex, onDone }) {
         <div className="flex flex-col gap-2.5 mt-8">
           {ex.options.map((opt, i) => {
             const isPicked = picked === i;
+            const isHinted = hintUsed && !checked && opt.correct;
             let bg = tokens.card, border = "1px solid transparent", color = tokens.textPrimary;
             if (checked && isPicked) { bg = opt.correct ? tokens.correctBg : tokens.wrongBg; border = `1px solid ${opt.correct ? tokens.correct : tokens.wrong}55`; color = opt.correct ? tokens.correct : tokens.wrong; }
+            else if (isHinted) { bg = tokens.correctBg; border = `1px solid ${tokens.correct}55`; color = tokens.correct; }
             return <button key={i} onClick={() => check(opt, i)} className="text-left px-4 py-3.5 rounded-2xl font-semibold text-[14.5px]" style={{ background: bg, border, color }}>{opt.text}</button>;
           })}
         </div>
       </div>
+      <HelpersBar visible={helpersVisible} checked={checked} onHint={() => setHintUsed(true)} hintUsed={hintUsed} onSkip={skip} />
       <FeedbackBar checked={checked} correctText={ex.options.find((o) => o.correct).text} onNext={onDone} />
     </>
   );
@@ -159,7 +219,11 @@ function Choice({ ex, onDone }) {
 function FillBlank({ ex, onDone }) {
   const [picked, setPicked] = useState(null);
   const [checked, setChecked] = useState(null);
+  const [hintUsed, setHintUsed] = useState(false);
+  const helpersVisible = useHelpersVisible();
+
   const check = (word) => { if (checked) return; setPicked(word); setChecked(word === ex.correct ? "correct" : "wrong"); };
+  const skip = () => setChecked("skipped");
 
   return (
     <>
@@ -172,11 +236,15 @@ function FillBlank({ ex, onDone }) {
           <span className="text-[20px] font-extrabold" style={{ color: tokens.textPrimary }}>{ex.after}</span>
         </div>
         <div className="flex flex-wrap gap-2.5 justify-center mt-10">
-          {ex.options.map((word) => (
-            <button key={word} onClick={() => check(word)} className="px-4 py-2.5 rounded-xl font-bold text-[14px]" style={{ background: tokens.card, color: tokens.textPrimary, border: `1px solid ${tokens.track}` }}>{word}</button>
-          ))}
+          {ex.options.map((word) => {
+            const isHinted = hintUsed && !checked && word === ex.correct;
+            return (
+              <button key={word} onClick={() => check(word)} className="px-4 py-2.5 rounded-xl font-bold text-[14px]" style={{ background: isHinted ? tokens.correctBg : tokens.card, color: isHinted ? tokens.correct : tokens.textPrimary, border: `1px solid ${isHinted ? tokens.correct + "70" : tokens.track}` }}>{word}</button>
+            );
+          })}
         </div>
       </div>
+      <HelpersBar visible={helpersVisible} checked={checked} onHint={() => setHintUsed(true)} hintUsed={hintUsed} onSkip={skip} />
       <FeedbackBar checked={checked} correctText={ex.correct} onNext={onDone} />
     </>
   );
@@ -185,7 +253,12 @@ function FillBlank({ ex, onDone }) {
 function TranslateToUz({ ex, onDone }) {
   const [value, setValue] = useState("");
   const [checked, setChecked] = useState(null);
+  const [revealedCount, setRevealedCount] = useState(0);
+  const helpersVisible = useHelpersVisible();
+
   const check = () => setChecked(ex.accept.includes(value.trim().toLowerCase().replace(/\s+/g, " ")) ? "correct" : "wrong");
+  const skip = () => setChecked("skipped");
+  const giveLetter = () => setRevealedCount((c) => Math.min(c + 1, ex.word.length));
 
   return (
     <>
@@ -196,8 +269,22 @@ function TranslateToUz({ ex, onDone }) {
           <h1 className="text-[22px] font-extrabold leading-snug pt-1.5" style={{ color: tokens.textPrimary }}>{ex.source}</h1>
         </div>
         <input value={value} onChange={(e) => !checked && setValue(e.target.value)} placeholder="Напиши перевод на узбекском..." className="w-full mt-8 rounded-2xl px-4 py-3.5 text-[15px] font-semibold outline-none" style={{ background: tokens.card, color: tokens.textPrimary, border: `2px solid ${checked === "wrong" ? tokens.wrong : "transparent"}` }} />
-        <p className="text-[12px] mt-2 px-1" style={{ color: tokens.textSecondary }}>Подсказка: {ex.hint}</p>
+
+        {revealedCount > 0 && (
+          <div className="flex items-center gap-1.5 mt-3 px-1">
+            {ex.word.split("").map((letter, i) => (
+              <span
+                key={i}
+                className="w-7 h-8 rounded-lg flex items-center justify-center font-extrabold text-[14px]"
+                style={{ background: i < revealedCount ? tokens.correctBg : tokens.card, color: i < revealedCount ? tokens.correct : tokens.textSecondary, border: `1px solid ${tokens.track}` }}
+              >
+                {i < revealedCount ? letter : "·"}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
+      <HelpersBar visible={helpersVisible} checked={checked} onHint={giveLetter} hintUsed={revealedCount >= ex.word.length} onSkip={skip} />
       {!checked && (
         <div className="px-4 pb-4 shrink-0">
           <button onClick={check} disabled={!value.trim()} className="w-full rounded-2xl py-4 font-extrabold text-[15px] tracking-wide" style={{ background: !value.trim() ? tokens.track : tokens.accentGradient, color: !value.trim() ? tokens.textSecondary : "#FBF9F4" }}>ПРОВЕРИТЬ</button>
@@ -214,7 +301,9 @@ export default function TrainerScreen({ onExit, topicFilter }) {
   const [index, setIndex] = useState(0);
   const [showBadge, setShowBadge] = useState(false);
   // TODO: когда подключим getQueue из api.js — передавать topicFilter?.id как параметр,
-  // бэкенд вернёт слова только по этой теме вместо общей SRS-очереди
+  // бэкенд вернёт слова только по этой теме вместо общей SRS-очереди.
+  // TODO: onDone должен вызывать submitAnswer(wordId, correct) — "skipped" не засчитывается
+  // ни в прогресс слова, ни в очки (по 1.2/2.3).
   const ex = QUEUE[index % QUEUE.length];
   const Renderer = RENDERERS[ex.type];
   const progress = (index % QUEUE.length) / QUEUE.length;
