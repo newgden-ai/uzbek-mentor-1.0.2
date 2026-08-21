@@ -1,0 +1,28 @@
+import { WORDS } from "./words.js";
+
+const LEVEL_ORDER = ["A1", "A2", "B1", "B2"];
+
+// TODO: пока словарь в WORDS — это мок из нескольких слов, реальный тест на 30 вопросов
+// станет возможен, когда подключим getWords из api.js (там вся база).
+export function buildPlacementQueue(selectedLevel, maxQuestions = 30) {
+  const allowedLevels = LEVEL_ORDER.slice(0, LEVEL_ORDER.indexOf(selectedLevel) + 1);
+  const pool = WORDS.filter((w) => allowedLevels.includes(w.level));
+  const shuffled = [...pool].sort(() => Math.random() - 0.5).slice(0, maxQuestions);
+
+  return shuffled.map((word) => {
+    const distractors = WORDS.filter((w) => w.id !== word.id)
+      .sort(() => Math.random() - 0.5)
+      .slice(0, 3)
+      .map((w) => ({ text: w.ru, correct: false }));
+
+    const options = [{ text: word.ru, correct: true }, ...distractors].sort(() => Math.random() - 0.5);
+
+    return {
+      type: "choice",
+      wordStage: 0,
+      prompt: "Выбери перевод",
+      source: word.uz,
+      options,
+    };
+  });
+}
