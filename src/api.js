@@ -26,8 +26,20 @@ async function apiPost(body) {
 export const hasApi = Boolean(API_URL);
 
 export async function getCurrentUser() {
-  if (!hasApi) return { user_id: "demo", username: "denis", level: "A1.2", xp: 1240, streak: 7 };
+  if (!hasApi) return { user_id: "demo", username: "denis", level: "", xp: 1240, streak: 7 };
   return apiGet("user", { init_data: getInitData() });
+}
+
+// Слова без привязки к юзеру (без персонального stage/decay) — нужно для
+// placement-теста (1.3) и для повтора конкретной темы из "Пути" (1.4).
+export async function getWords({ level, topic } = {}) {
+  if (!hasApi) {
+    let list = MOCK_WORDS;
+    if (level) list = list.filter((w) => w.level === level);
+    if (topic) list = list.filter((w) => w.topic === topic);
+    return { words: list };
+  }
+  return apiGet("words", { level, topic });
 }
 
 export async function getDictionary({ query, level } = {}) {
@@ -37,13 +49,13 @@ export async function getDictionary({ query, level } = {}) {
 }
 
 export async function getQueue(count = 10) {
-  if (!hasApi) return { queue: [] }; // TrainerScreen пока использует свой демо-QUEUE
+  if (!hasApi) return { queue: [] };
   const user = await getCurrentUser();
   return apiGet("queue", { user_id: user.user_id, count });
 }
 
 export async function getPath() {
-  if (!hasApi) return { topics: MOCK_LEVELS.flatMap((l) => l.topics) };
+  if (!hasApi) return { topics: MOCK_LEVELS.flatMap((l) => l.topics.map((t) => ({ ...t, level: l.level, total: t.count, mastered: t.status === "done" ? t.count : 0 }))) };
   const user = await getCurrentUser();
   return apiGet("path", { user_id: user.user_id });
 }
@@ -52,4 +64,11 @@ export async function submitAnswer(wordId, correct) {
   if (!hasApi) return { wordId, stage: 0 };
   const user = await getCurrentUser();
   return apiPost({ action: "submitAnswer", user_id: user.user_id, word_id: wordId, correct });
+}
+
+// Сохраняет уровень, подтверждённый placement-тестом (1.3).
+export async function setUserLevel(level) {
+  if (!hasApi) return { ok: true, level };
+  const user = await getCurrentUser();
+  return apiPost({ action: "setUserLevel", user_id: user.user_id, level });
 }
