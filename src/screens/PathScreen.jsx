@@ -1,9 +1,33 @@
-import React, { useState } from "react";
-import { Check, Lock, Play, RotateCcw, ChevronRight } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { Check, Lock, Play, RotateCcw, ChevronRight, Loader2 } from "lucide-react";
 import { tokens, levelColor } from "../theme.js";
-import { LEVELS } from "../data/words.js";
+import { getPath } from "../api.js";
 
+const LEVEL_ORDER = ["A1", "A2", "B1", "B2"];
 const CHUNK_SIZE = 12; // сколько слов в одной подтеме — держит уроки короткими
+
+// Группирует плоский список тем от API по уровням и расставляет статусы:
+// тема "done" только если реально все слова темы освоены (mastered === total,
+// т.е. дошли до 5 стадии здания), следующая тема открывается только после этого.
+function groupIntoLevels(topics) {
+  const byLevel = {};
+  topics.forEach((t) => {
+    byLevel[t.level] = byLevel[t.level] || [];
+    byLevel[t.level].push(t);
+  });
+
+  return LEVEL_ORDER.filter((lvl) => byLevel[lvl]).map((level) => {
+    let prevDone = true;
+    const levelTopics = byLevel[level].map((t) => {
+      const isDone = t.total > 0 && t.mastered === t.total;
+      const status = isDone ? "done" : prevDone ? "current" : "locked";
+      prevDone = isDone;
+      return { id: t.name, name: t.name, count: t.total, status };
+    });
+    const totalWords = byLevel[level].reduce((sum, t) => sum + t.total, 0);
+    return { level, subtitle: `${totalWords} слов`, topics: levelTopics };
+  });
+}
 
 // Разбивает тему на подтемы и расставляет статусы в зависимости от статуса темы.
 // TODO: когда подключим API — статус подтемы придёт из user_words (реальный прогресс),
@@ -131,6 +155,11 @@ function TopicNode({ topic, color, isExpanded, onToggle, onOpenLesson, onRepeat 
 export default function PathScreen({ onOpenLesson, onRepeatTopic }) {
   const [openLevel, setOpenLevel] = useState("A1");
   const [expandedTopicId, setExpandedTopicId] = useState(null);
+  const [levels, setLevels] = useState(null); // null = загрузка
+
+  useEffect(() => {
+    getPath().then(({ topics }) => setLevels(groupIntoLevels(topics || [])));
+  }, []);
 
   return (
     <div className="px-6 pt-6 pb-2 flex-1 overflow-y-auto">
@@ -140,49 +169,58 @@ export default function PathScreen({ onOpenLesson, onRepeatTopic }) {
         Тапни по теме — внутри подтемы, можно выбрать, что пройти или повторить
       </p>
 
-      <div className="flex flex-col gap-3">
-        {LEVELS.map((lvl) => {
-          const isOpen = openLevel === lvl.level;
-          const color = levelColor[lvl.level];
-          const doneCount = lvl.topics.filter((t) => t.status === "done").length;
-          return (
-            <div key={lvl.level}>
-              <button
-                onClick={() => setOpenLevel(isOpen ? null : lvl.level)}
-                className="w-full flex items-center justify-between rounded-2xl px-4 py-3.5"
-                style={{ background: tokens.card }}
-              >
-                <div className="flex items-center gap-3">
-                  <span className="text-[12px] font-extrabold rounded-full px-2.5 py-1" style={{ background: `${color}22`, color }}>{lvl.level}</span>
-                  <div className="text-left">
-                    <p className="font-bold text-[14px]" style={{ color: tokens.textPrimary }}>{lvl.subtitle}</p>
-                    <p className="text-[11.5px]" style={{ color: tokens.textSecondary }}>{doneCount}/{lvl.topics.length} тем открыто</p>
+      {levels === null && (
+        <div className="flex flex-col items-center gap-2 mt-10">
+          <Loader2 size={22} color={tokens.accentTeal} className="animate-spin" />
+          <p className="text-[12.5px]" style={{ color: tokens.textSecondary }}>Считаем прогресс по темам…</p>
+        </div>
+      )}
+
+      {levels !== null && (
+        <div className="flex flex-col gap-3">
+          {levels.map((lvl) => {
+            const isOpen = openLevel === lvl.level;
+            const color = levelColor[lvl.level];
+            const doneCount = lvl.topics.filter((t) => t.status === "done").length;
+            return (
+              <div key={lvl.level}>
+                <button
+                  onClick={() => setOpenLevel(isOpen ? null : lvl.level)}
+                  className="w-full flex items-center justify-between rounded-2xl px-4 py-3.5"
+                  style={{ background: tokens.card }}
+                >
+                  <div className="flex items-center gap-3">
+                    <span className="text-[12px] font-extrabold rounded-full px-2.5 py-1" style={{ background: `${color}22`, color }}>{lvl.level}</span>
+                    <div className="text-left">
+                      <p className="font-bold text-[14px]" style={{ color: tokens.textPrimary }}>{lvl.subtitle}</p>
+                      <p className="text-[11.5px]" style={{ color: tokens.textSecondary }}>{doneCount}/{lvl.topics.length} тем открыто</p>
+                    </div>
                   </div>
-                </div>
-                <span
-                  className="text-[18px]"
-                  style={{ color: tokens.textSecondary, transform: isOpen ? "rotate(180deg)" : "none", display: "inline-block", transition: "transform 150ms ease" }}
-                >⌄</span>
-              </button>
-              {isOpen && (
-                <div className="pt-4 pl-1">
-                  {lvl.topics.map((t) => (
-                    <TopicNode
-                      key={t.id}
-                      topic={t}
-                      color={color}
-                      isExpanded={expandedTopicId === t.id}
-                      onToggle={() => setExpandedTopicId(expandedTopicId === t.id ? null : t.id)}
-                      onOpenLesson={onOpenLesson}
-                      onRepeat={onRepeatTopic}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
+                  <span
+                    className="text-[18px]"
+                    style={{ color: tokens.textSecondary, transform: isOpen ? "rotate(180deg)" : "none", display: "inline-block", transition: "transform 150ms ease" }}
+                  >⌄</span>
+                </button>
+                {isOpen && (
+                  <div className="pt-4 pl-1">
+                    {lvl.topics.map((t) => (
+                      <TopicNode
+                        key={t.id}
+                        topic={{ ...t, level: lvl.level }}
+                        color={color}
+                        isExpanded={expandedTopicId === t.id}
+                        onToggle={() => setExpandedTopicId(expandedTopicId === t.id ? null : t.id)}
+                        onOpenLesson={onOpenLesson}
+                        onRepeat={onRepeatTopic}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
