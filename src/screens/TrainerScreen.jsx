@@ -1,51 +1,10 @@
 import React, { useState, useEffect } from "react";
-import { Heart, Volume2, Check, RotateCcw, X, Lightbulb, SkipForward, Trophy } from "lucide-react";
+import { Heart, Volume2, Check, RotateCcw, X, Lightbulb, SkipForward, Trophy, Loader2 } from "lucide-react";
 import { tokens } from "../theme.js";
 import { LandmarkStage, StagePopover } from "../components/LandmarkStage.jsx";
 import { buildPlacementQueue } from "../data/placement.js";
-
-// TODO: заменить на очередь упражнений от SRS-алгоритма (Apps Script API).
-// type: "assembly" | "translateToUz" | "choice" | "fillBlank"
-const QUEUE = [
-  {
-    type: "assembly",
-    wordStage: 3,
-    prompt: "Собери предложение",
-    ru: "Я каждый день хожу в школу.",
-    correct: ["Men", "har", "kuni", "maktabga", "boraman."],
-    bank: ["Men", "maktabga", "kuni", "boraman.", "kelaman.", "har", "maktabdan"],
-  },
-  {
-    type: "choice",
-    wordStage: 4,
-    prompt: "Выбери перевод",
-    source: "U bozorga ketdi.",
-    options: [
-      { text: "Она пошла на рынок.", correct: true },
-      { text: "Он купил еду.", correct: false },
-      { text: "Мы идём домой.", correct: false },
-      { text: "Ты был на рынке?", correct: false },
-    ],
-  },
-  {
-    type: "fillBlank",
-    wordStage: 1,
-    prompt: "Вставь пропущенное слово",
-    before: "Bozorda",
-    after: "sotib oldim.",
-    ru: "Я купил на рынке мясо.",
-    options: ["go‘sht", "tovuq", "kitob", "suv"],
-    correct: "go‘sht",
-  },
-  {
-    type: "translateToUz",
-    wordStage: 2,
-    prompt: "Переведи на узбекский",
-    source: "Ты откуда приехал?",
-    accept: ["sen qayerdan kelding?", "sen qayerdan kelding"],
-    word: "kelding", // слово, по которому даётся буквенная подсказка
-  },
-];
+import { buildQueueFromWords } from "../data/exerciseBuilder.js";
+import { getQueue as apiGetQueue, getWords as apiGetWords } from "../api.js";
 
 // Через сколько мс появляются "Подсказка"/"Пропустить" — не сразу, чтобы дать
 // сначала попробовать самому.
@@ -315,19 +274,62 @@ function PlacementResult({ score, total, level, onFinish }) {
   );
 }
 
+function LoadingState() {
+  return (
+    <div className="flex-1 flex flex-col items-center justify-center gap-3">
+      <Loader2 size={28} color={tokens.accentTeal} className="animate-spin" />
+      <p className="text-[13px]" style={{ color: tokens.textSecondary }}>Загружаем задания…</p>
+    </div>
+  );
+}
+
+function EmptyState({ onExit }) {
+  return (
+    <div className="flex-1 flex flex-col items-center justify-center gap-3 px-8 text-center">
+      <p className="font-bold text-[15px]" style={{ color: tokens.textPrimary }}>Пока нечего повторять</p>
+      <p className="text-[13px]" style={{ color: tokens.textSecondary }}>В этой подборке не нашлось слов с примерами для упражнений</p>
+      <button onClick={onExit} className="mt-2 rounded-full px-6 py-2.5 font-bold text-[13px]" style={{ background: tokens.accentGradient, color: "#FBF9F4" }}>
+        Назад
+      </button>
+    </div>
+  );
+}
+
 export default function TrainerScreen({ onExit, topicFilter, placementLevel, onFinishPlacement }) {
   const [index, setIndex] = useState(0);
   const [showBadge, setShowBadge] = useState(false);
   const [score, setScore] = useState(0);
+  const [queue, setQueue] = useState(null); // null = ещё грузится
   const isPlacement = Boolean(placementLevel);
 
-  // TODO: когда подключим getQueue из api.js — передавать topicFilter?.id как параметр,
-  // бэкенд вернёт слова только по этой теме вместо общей SRS-очереди.
-  // TODO: onDone должен вызывать submitAnswer(wordId, correct) — "skipped" не засчитывается
-  // ни в прогресс слова, ни в очки (по 1.2/2.3).
-  const [queue] = useState(() => (isPlacement ? buildPlacementQueue(placementLevel) : QUEUE));
-  const finished = isPlacement && index >= queue.length;
+  useEffect(() => {
+    let cancelled = false;
+    setQueue(null);
+    setIndex(0);
+    setScore(0);
 
+    async function load() {
+      let built;
+      if (isPlacement) {
+        built = await buildPlacementQueue(placementLevel);
+      } else if (topicFilter) {
+        const { words } = await apiGetWords({ level: topicFilter.level, topic: topicFilter.name });
+        built = buildQueueFromWords(words || []);
+      } else {
+        const { queue: apiQueue } = await apiGetQueue(20);
+        built = buildQueueFromWords(apiQueue || []);
+      }
+      if (!cancelled) setQueue(built);
+    }
+    load();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPlacement, placementLevel, topicFilter?.id, topicFilter?.subLesson?.index]);
+
+  if (queue === null) return <LoadingState />;
+  if (queue.length === 0) return <EmptyState onExit={onExit} />;
+
+  const finished = isPlacement && index >= queue.length;
   if (finished) {
     return <PlacementResult score={score} total={queue.length} level={placementLevel} onFinish={() => onFinishPlacement(placementLevel)} />;
   }
@@ -338,6 +340,8 @@ export default function TrainerScreen({ onExit, topicFilter, placementLevel, onF
 
   const handleDone = (wasCorrect) => {
     if (isPlacement && wasCorrect) setScore((s) => s + 1);
+    // TODO: submitAnswer(ex.wordId, wasCorrect) — не для placement (там не должно
+    // трогать реальный прогресс слов, это только проверка стартового уровня)
     setIndex((i) => i + 1);
   };
 
