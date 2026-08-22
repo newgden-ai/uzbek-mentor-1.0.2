@@ -1,6 +1,7 @@
 import React, { useState } from "react";
-import { Flame, Trophy, Zap, Lock, Target, Ghost, Gem } from "lucide-react";
+import { Flame, Trophy, Zap, Lock, Target, Ghost, Gem, Ticket, Check } from "lucide-react";
 import { tokens } from "../theme.js";
+import { redeemCode } from "../api.js";
 
 const weekDays = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
 // TODO: нет реального дневного лога активности в users (только суммарный streak) —
@@ -8,6 +9,60 @@ const weekDays = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
 // Пока грубо закрашиваем последние N дней недели по числу streak.
 function approximateWeek(streak) {
   return Array.from({ length: 7 }, (_, i) => i >= 7 - Math.min(streak, 7));
+}
+
+function PromoCodeCard({ onRedeemed }) {
+  const [code, setCode] = useState("");
+  const [status, setStatus] = useState(null); // null | 'loading' | 'ok' | 'error'
+  const [message, setMessage] = useState("");
+
+  const submit = async () => {
+    if (!code.trim()) return;
+    setStatus("loading");
+    const res = await redeemCode(code.trim());
+    if (res.error) {
+      setStatus("error");
+      setMessage(res.error);
+    } else {
+      setStatus("ok");
+      setMessage(`Тариф обновлён: ${res.tier}`);
+      onRedeemed?.(res.tier);
+    }
+  };
+
+  return (
+    <div className="rounded-2xl px-4 py-3.5 mt-3" style={{ background: tokens.card }}>
+      <div className="flex items-center gap-2 mb-2">
+        <Ticket size={15} color={tokens.accentOchre} />
+        <span className="text-[12.5px] font-bold" style={{ color: tokens.textPrimary }}>Есть промокод?</span>
+      </div>
+      <div className="flex gap-2">
+        <input
+          value={code}
+          onChange={(e) => { setCode(e.target.value); setStatus(null); }}
+          placeholder="Введи код"
+          className="flex-1 rounded-xl px-3 py-2 text-[13px] font-semibold outline-none"
+          style={{ background: tokens.cardActive, color: tokens.textPrimary }}
+        />
+        <button
+          onClick={submit}
+          disabled={status === "loading"}
+          className="px-4 py-2 rounded-xl font-bold text-[12.5px] shrink-0"
+          style={{ background: tokens.accentGradient, color: "#FBF9F4" }}
+        >
+          Активировать
+        </button>
+      </div>
+      {status === "ok" && (
+        <p className="text-[12px] mt-2 flex items-center gap-1" style={{ color: tokens.correct }}>
+          <Check size={13} /> {message}
+        </p>
+      )}
+      {status === "error" && (
+        <p className="text-[12px] mt-2" style={{ color: tokens.wrong }}>{message}</p>
+      )}
+    </div>
+  );
 }
 
 const CATEGORIES = [
@@ -47,6 +102,7 @@ export default function ProgressScreen({ user }) {
   const displayName = user?.first_name || user?.username || "Ты";
   const level = user?.level || "—";
   const streak = user?.streak ?? 0;
+  const [tier, setTier] = useState(user?.tier || "free");
 
   const shown = achievements.filter((a) => a.cat === category);
   const unlockedInCat = shown.filter((a) => a.unlocked).length;
@@ -54,7 +110,12 @@ export default function ProgressScreen({ user }) {
 
   return (
     <div className="px-6 pt-6 pb-2 flex-1 flex flex-col overflow-hidden">
-      <p className="text-xs font-bold tracking-widest uppercase" style={{ color: tokens.textSecondary }}>{displayName} · уровень {level}</p>
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-bold tracking-widest uppercase" style={{ color: tokens.textSecondary }}>{displayName} · уровень {level}</p>
+        <span className="text-[10.5px] font-extrabold uppercase rounded-full px-2.5 py-1" style={{ background: `${tokens.accentOchre}22`, color: tokens.accentOchre }}>
+          {tier}
+        </span>
+      </div>
       <h1 className="text-3xl font-extrabold mt-1" style={{ color: tokens.textPrimary }}>Прогресс</h1>
 
       <div className="rounded-2xl px-4 py-3.5 mt-4" style={{ background: tokens.card }}>
@@ -66,6 +127,8 @@ export default function ProgressScreen({ user }) {
           <div className="h-full rounded-full" style={{ width: `${(xp / xpToNext) * 100}%`, background: tokens.accentGradient }} />
         </div>
       </div>
+
+      <PromoCodeCard onRedeemed={(newTier) => setTier(newTier)} />
 
       <div className="rounded-2xl px-5 py-4 mt-3" style={{ background: tokens.card }}>
         <div className="flex items-center gap-2">
