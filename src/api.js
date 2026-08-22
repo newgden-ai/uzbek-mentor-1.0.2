@@ -91,3 +91,11 @@ export async function grantAdHint() {
   const user = await getCurrentUser();
   return apiPost({ action: "grantAdHint", user_id: user.user_id });
 }
+
+// Погашение промокода на premium/tester.
+export async function redeemCode(code) {
+  if (!hasApi) return { ok: true, tier: "premium" };
+  const user = await getCurrentUser();
+  return apiPost({ action: "redeemPromoCode", user_id: user.user_id, code });
+}
+
