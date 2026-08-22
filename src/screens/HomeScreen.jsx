@@ -61,9 +61,11 @@ function LevelPicker({ onSelectLevel }) {
   );
 }
 
-export default function HomeScreen({ userLevel, onSelectLevel }) {
+export default function HomeScreen({ user, userLevel, onSelectLevel }) {
   const [active, setActive] = useState("srs");
   const activeCheck = checks.find((c) => c.id === active);
+  const displayName = user?.first_name || user?.username || "друг";
+  const streak = user?.streak ?? 0;
 
   if (!userLevel) return <LevelPicker onSelectLevel={onSelectLevel} />;
 
@@ -71,11 +73,11 @@ export default function HomeScreen({ userLevel, onSelectLevel }) {
     <div className="px-6 pt-6 pb-2 flex-1 overflow-y-auto">
       <div className="flex items-center justify-between">
         <p className="text-xs font-bold tracking-widest uppercase" style={{ color: tokens.textSecondary }}>
-          Assalomu alaykum, Denis
+          Assalomu alaykum, {displayName}
         </p>
         <div className="flex items-center gap-1 rounded-full px-3 py-1" style={{ background: tokens.card }}>
           <Flame size={14} color={tokens.accentOchre} />
-          <span className="text-xs font-bold" style={{ color: tokens.textPrimary }}>7</span>
+          <span className="text-xs font-bold" style={{ color: tokens.textPrimary }}>{streak}</span>
         </div>
       </div>
       <div className="flex items-center justify-between mt-1">
