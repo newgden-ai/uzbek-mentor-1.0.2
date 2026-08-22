@@ -1,23 +1,32 @@
-import React, { useState, useMemo } from "react";
-import { Search, ChevronDown, ArrowDownAZ } from "lucide-react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
+import { Search, ChevronDown, ArrowDownAZ, Loader2 } from "lucide-react";
 import { tokens } from "../theme.js";
-import { WORDS } from "../data/words.js";
+import { getDictionary } from "../api.js";
 import { LandmarkStage, StagePopover } from "../components/LandmarkStage.jsx";
+
+const DEBOUNCE_MS = 350;
 
 export default function DictionaryScreen() {
   const [query, setQuery] = useState("");
   const [sortLang, setSortLang] = useState("ru");
   const [expanded, setExpanded] = useState(null);
   const [popover, setPopover] = useState(null);
+  const [words, setWords] = useState(null); // null = загрузка
+  const debounceRef = useRef(null);
+
+  useEffect(() => {
+    clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(async () => {
+      const { words: list } = await getDictionary({ query: query.trim() || undefined });
+      setWords(list || []);
+    }, DEBOUNCE_MS);
+    return () => clearTimeout(debounceRef.current);
+  }, [query]);
 
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    let list = WORDS;
-    if (q) {
-      list = list.filter((w) => w.ru.toLowerCase().includes(q) || w.uz.toLowerCase().includes(q));
-    }
-    return [...list].sort((a, b) => a[sortLang].localeCompare(b[sortLang], sortLang === "ru" ? "ru" : "en"));
-  }, [query, sortLang]);
+    if (!words) return [];
+    return [...words].sort((a, b) => a[sortLang].localeCompare(b[sortLang], sortLang === "ru" ? "ru" : "en"));
+  }, [words, sortLang]);
 
   return (
     <div className="relative flex-1 flex flex-col overflow-hidden">
@@ -56,7 +65,19 @@ export default function DictionaryScreen() {
       </div>
 
       <div className="px-6 flex flex-col gap-2.5 pb-6 flex-1 overflow-y-auto">
-        {filtered.map((w) => {
+        {words === null && (
+          <div className="flex flex-col items-center gap-2 mt-10">
+            <Loader2 size={22} color={tokens.accentTeal} className="animate-spin" />
+            <p className="text-[12.5px]" style={{ color: tokens.textSecondary }}>Ищем в базе…</p>
+          </div>
+        )}
+
+        {words !== null && filtered.length > 0 && !query && (
+          <p className="text-[11.5px] px-1 -mt-1 mb-1" style={{ color: tokens.textSecondary }}>
+            Показаны первые {filtered.length} — используй поиск, чтобы найти конкретное слово
+          </p>
+        )}
+        {words !== null && filtered.map((w) => {
           const isOpen = expanded === w.id;
           return (
             <div key={w.id} className="rounded-2xl overflow-hidden" style={{ background: tokens.card }}>
@@ -90,7 +111,7 @@ export default function DictionaryScreen() {
 
               {isOpen && (
                 <div className="px-5 pb-4 flex flex-col gap-2.5" style={{ borderTop: `1px solid ${tokens.track}` }}>
-                  {w.examples.map((ex, i) => (
+                  {(w.examples || []).map((ex, i) => (
                     <div key={i} className="pt-2.5">
                       <p className="text-[13px] font-semibold leading-snug" style={{ color: tokens.textPrimary }}>{ex.uz}</p>
                       <p className="text-[12px] mt-0.5 leading-snug" style={{ color: tokens.textSecondary }}>{ex.ru}</p>
@@ -101,7 +122,7 @@ export default function DictionaryScreen() {
             </div>
           );
         })}
-        {filtered.length === 0 && (
+        {words !== null && filtered.length === 0 && (
           <p className="text-center text-[13px] mt-10" style={{ color: tokens.textSecondary }}>Ничего не найдено — попробуй другой запрос</p>
         )}
       </div>
