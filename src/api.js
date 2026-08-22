@@ -72,3 +72,22 @@ export async function setUserLevel(level) {
   const user = await getCurrentUser();
   return apiPost({ action: "setUserLevel", user_id: user.user_id, level });
 }
+
+// 1.1 — лимиты подсказок.
+export async function getHintStatus() {
+  if (!hasApi) return { used: 0, limit: 3, remaining: 3, tier: "free" };
+  const user = await getCurrentUser();
+  return apiGet("hintStatus", { user_id: user.user_id });
+}
+
+export async function useHint() {
+  if (!hasApi) return { allowed: true, remaining: 2, excludeFromStats: false };
+  const user = await getCurrentUser();
+  return apiPost({ action: "useHint", user_id: user.user_id });
+}
+
+export async function grantAdHint() {
+  if (!hasApi) return { ok: true };
+  const user = await getCurrentUser();
+  return apiPost({ action: "grantAdHint", user_id: user.user_id });
+}
