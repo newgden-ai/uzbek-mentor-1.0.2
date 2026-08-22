@@ -4,7 +4,7 @@ import { tokens } from "../theme.js";
 import { LandmarkStage, StagePopover } from "../components/LandmarkStage.jsx";
 import { buildPlacementQueue } from "../data/placement.js";
 import { buildQueueFromWords } from "../data/exerciseBuilder.js";
-import { getQueue as apiGetQueue, getWords as apiGetWords } from "../api.js";
+import { getQueue as apiGetQueue, getWords as apiGetWords, getHintStatus, useHint as apiUseHint, grantAdHint } from "../api.js";
 
 // Через сколько мс появляются "Подсказка"/"Пропустить" — не сразу, чтобы дать
 // сначала попробовать самому.
@@ -41,18 +41,33 @@ function TopBar({ progress, stage, onBadgeClick, onExit }) {
 
 // Подсказка + Пропустить — общая полоска, появляется через HELPERS_DELAY_MS,
 // прячется как только задание уже проверено.
-function HelpersBar({ visible, checked, onHint, hintUsed, onSkip }) {
+// hintBudget: { remaining: number|null (null = безлимит), tier } — общий на весь урок,
+// не пересоздаётся на каждое упражнение.
+function HelpersBar({ visible, checked, onHint, hintUsed, onSkip, hintBudget, onWatchAd }) {
   if (!visible || checked) return null;
+  const exhausted = hintBudget && hintBudget.remaining === 0;
+
   return (
-    <div className="px-6 pb-2 flex items-center gap-2 shrink-0">
-      <button
-        onClick={onHint}
-        disabled={hintUsed}
-        className="flex items-center gap-1.5 px-3.5 py-2 rounded-full font-bold text-[12.5px]"
-        style={{ background: hintUsed ? tokens.track : tokens.card, color: hintUsed ? tokens.textSecondary : tokens.accentOchre }}
-      >
-        <Lightbulb size={14} /> Подсказка
-      </button>
+    <div className="px-6 pb-2 flex items-center gap-2 shrink-0 flex-wrap">
+      {!exhausted ? (
+        <button
+          onClick={onHint}
+          disabled={hintUsed}
+          className="flex items-center gap-1.5 px-3.5 py-2 rounded-full font-bold text-[12.5px]"
+          style={{ background: hintUsed ? tokens.track : tokens.card, color: hintUsed ? tokens.textSecondary : tokens.accentOchre }}
+        >
+          <Lightbulb size={14} /> Подсказка
+          {hintBudget?.remaining != null && <span style={{ opacity: 0.7 }}>· {hintBudget.remaining}</span>}
+        </button>
+      ) : (
+        <button
+          onClick={onWatchAd}
+          className="flex items-center gap-1.5 px-3.5 py-2 rounded-full font-bold text-[12.5px]"
+          style={{ background: tokens.accentGradient, color: "#FBF9F4" }}
+        >
+          <Lightbulb size={14} /> +1 за рекламу
+        </button>
+      )}
       <button
         onClick={onSkip}
         className="flex items-center gap-1.5 px-3.5 py-2 rounded-full font-bold text-[12.5px]"
@@ -60,7 +75,6 @@ function HelpersBar({ visible, checked, onHint, hintUsed, onSkip }) {
       >
         <SkipForward size={14} /> Пропустить
       </button>
-      {/* TODO: дневной лимит подсказок (3/10/безлимит для тарифов) — 1.1, считается на бэкенде по user_id */}
     </div>
   );
 }
@@ -92,7 +106,7 @@ function FeedbackBar({ checked, correctText, onNext }) {
   );
 }
 
-function Assembly({ ex, onDone }) {
+function Assembly({ ex, onDone, hintBudget, onRequestHint, onWatchAd }) {
   const [bank, setBank] = useState(ex.bank);
   const [answer, setAnswer] = useState([]);
   const [checked, setChecked] = useState(null);
@@ -103,6 +117,10 @@ function Assembly({ ex, onDone }) {
   const removeTile = (i) => { if (checked) return; setBank([...bank, answer[i].word]); setAnswer(answer.filter((_, idx) => idx !== i)); };
   const check = () => setChecked(answer.map((a) => a.word).join(" ") === ex.correct.join(" ") ? "correct" : "wrong");
   const skip = () => setChecked("skipped");
+  const handleHint = async () => {
+    const res = await onRequestHint();
+    if (res.allowed) setHintUsed(true);
+  };
   // подсказка: подсвечиваем в банке слово, которое должно идти следующим
   const nextCorrectWord = ex.correct[answer.length];
 
@@ -131,7 +149,7 @@ function Assembly({ ex, onDone }) {
           })}
         </div>
       </div>
-      <HelpersBar visible={helpersVisible} checked={checked} onHint={() => setHintUsed(true)} hintUsed={hintUsed} onSkip={skip} />
+      <HelpersBar visible={helpersVisible} checked={checked} onHint={handleHint} hintUsed={hintUsed} onSkip={skip} hintBudget={hintBudget} onWatchAd={onWatchAd} />
       {!checked && (
         <div className="px-4 pb-4 shrink-0">
           <button onClick={check} disabled={answer.length === 0} className="w-full rounded-2xl py-4 font-extrabold text-[15px] tracking-wide" style={{ background: answer.length === 0 ? tokens.track : tokens.accentGradient, color: answer.length === 0 ? tokens.textSecondary : "#FBF9F4" }}>ПРОВЕРИТЬ</button>
@@ -142,7 +160,7 @@ function Assembly({ ex, onDone }) {
   );
 }
 
-function Choice({ ex, onDone }) {
+function Choice({ ex, onDone, hintBudget, onRequestHint, onWatchAd }) {
   const [picked, setPicked] = useState(null);
   const [checked, setChecked] = useState(null);
   const [hintUsed, setHintUsed] = useState(false);
@@ -150,6 +168,10 @@ function Choice({ ex, onDone }) {
 
   const check = (opt, i) => { if (checked) return; setPicked(i); setChecked(opt.correct ? "correct" : "wrong"); };
   const skip = () => setChecked("skipped");
+  const handleHint = async () => {
+    const res = await onRequestHint();
+    if (res.allowed) setHintUsed(true);
+  };
 
   return (
     <>
@@ -170,13 +192,13 @@ function Choice({ ex, onDone }) {
           })}
         </div>
       </div>
-      <HelpersBar visible={helpersVisible} checked={checked} onHint={() => setHintUsed(true)} hintUsed={hintUsed} onSkip={skip} />
+      <HelpersBar visible={helpersVisible} checked={checked} onHint={handleHint} hintUsed={hintUsed} onSkip={skip} hintBudget={hintBudget} onWatchAd={onWatchAd} />
       <FeedbackBar checked={checked} correctText={ex.options.find((o) => o.correct).text} onNext={() => onDone(checked === "correct")} />
     </>
   );
 }
 
-function FillBlank({ ex, onDone }) {
+function FillBlank({ ex, onDone, hintBudget, onRequestHint, onWatchAd }) {
   const [picked, setPicked] = useState(null);
   const [checked, setChecked] = useState(null);
   const [hintUsed, setHintUsed] = useState(false);
@@ -184,6 +206,10 @@ function FillBlank({ ex, onDone }) {
 
   const check = (word) => { if (checked) return; setPicked(word); setChecked(word === ex.correct ? "correct" : "wrong"); };
   const skip = () => setChecked("skipped");
+  const handleHint = async () => {
+    const res = await onRequestHint();
+    if (res.allowed) setHintUsed(true);
+  };
 
   return (
     <>
@@ -204,13 +230,13 @@ function FillBlank({ ex, onDone }) {
           })}
         </div>
       </div>
-      <HelpersBar visible={helpersVisible} checked={checked} onHint={() => setHintUsed(true)} hintUsed={hintUsed} onSkip={skip} />
+      <HelpersBar visible={helpersVisible} checked={checked} onHint={handleHint} hintUsed={hintUsed} onSkip={skip} hintBudget={hintBudget} onWatchAd={onWatchAd} />
       <FeedbackBar checked={checked} correctText={ex.correct} onNext={() => onDone(checked === "correct")} />
     </>
   );
 }
 
-function TranslateToUz({ ex, onDone }) {
+function TranslateToUz({ ex, onDone, hintBudget, onRequestHint, onWatchAd }) {
   const [value, setValue] = useState("");
   const [checked, setChecked] = useState(null);
   const [revealedCount, setRevealedCount] = useState(0);
@@ -218,7 +244,10 @@ function TranslateToUz({ ex, onDone }) {
 
   const check = () => setChecked(ex.accept.includes(value.trim().toLowerCase().replace(/\s+/g, " ")) ? "correct" : "wrong");
   const skip = () => setChecked("skipped");
-  const giveLetter = () => setRevealedCount((c) => Math.min(c + 1, ex.word.length));
+  const handleHint = async () => {
+    const res = await onRequestHint();
+    if (res.allowed) setRevealedCount((c) => Math.min(c + 1, ex.word.length));
+  };
 
   return (
     <>
@@ -244,7 +273,7 @@ function TranslateToUz({ ex, onDone }) {
           </div>
         )}
       </div>
-      <HelpersBar visible={helpersVisible} checked={checked} onHint={giveLetter} hintUsed={revealedCount >= ex.word.length} onSkip={skip} />
+      <HelpersBar visible={helpersVisible} checked={checked} onHint={handleHint} hintUsed={revealedCount >= ex.word.length} onSkip={skip} hintBudget={hintBudget} onWatchAd={onWatchAd} />
       {!checked && (
         <div className="px-4 pb-4 shrink-0">
           <button onClick={check} disabled={!value.trim()} className="w-full rounded-2xl py-4 font-extrabold text-[15px] tracking-wide" style={{ background: !value.trim() ? tokens.track : tokens.accentGradient, color: !value.trim() ? tokens.textSecondary : "#FBF9F4" }}>ПРОВЕРИТЬ</button>
@@ -300,6 +329,7 @@ export default function TrainerScreen({ onExit, topicFilter, placementLevel, onF
   const [showBadge, setShowBadge] = useState(false);
   const [score, setScore] = useState(0);
   const [queue, setQueue] = useState(null); // null = ещё грузится
+  const [hintBudget, setHintBudget] = useState(null); // {remaining, tier} — общий на весь урок
   const isPlacement = Boolean(placementLevel);
 
   useEffect(() => {
@@ -320,11 +350,32 @@ export default function TrainerScreen({ onExit, topicFilter, placementLevel, onF
         built = buildQueueFromWords(apiQueue || []);
       }
       if (!cancelled) setQueue(built);
+
+      // На placement-тесте подсказки не лимитируем (это разовая проверка, не основная практика).
+      if (!isPlacement && !cancelled) {
+        const status = await getHintStatus();
+        if (!cancelled) setHintBudget({ remaining: status.remaining, tier: status.tier });
+      }
     }
     load();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isPlacement, placementLevel, topicFilter?.id, topicFilter?.subLesson?.index]);
+
+  const requestHint = async () => {
+    if (isPlacement) return { allowed: true }; // без лимита на тесте
+    const res = await apiUseHint();
+    setHintBudget({ remaining: res.remaining, tier: hintBudget?.tier });
+    return res;
+  };
+
+  const watchAd = async () => {
+    // TODO: тут вызов реального рекламного SDK (Adsgram и т.п.), см. инструкцию в чате —
+    // grantAdHint() должен вызываться только из callback за просмотр рекламы ДО КОНЦА.
+    await grantAdHint();
+    const status = await getHintStatus();
+    setHintBudget({ remaining: status.remaining, tier: status.tier });
+  };
 
   if (queue === null) return <LoadingState />;
   if (queue.length === 0) return <EmptyState onExit={onExit} />;
@@ -365,7 +416,7 @@ export default function TrainerScreen({ onExit, topicFilter, placementLevel, onF
           </div>
         </div>
       )}
-      <Renderer key={index} ex={ex} onDone={handleDone} />
+      <Renderer key={index} ex={ex} onDone={handleDone} hintBudget={hintBudget} onRequestHint={requestHint} onWatchAd={watchAd} />
     </div>
   );
 }
