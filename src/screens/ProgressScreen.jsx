@@ -3,7 +3,12 @@ import { Flame, Trophy, Zap, Lock, Target, Ghost, Gem } from "lucide-react";
 import { tokens } from "../theme.js";
 
 const weekDays = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
-const weekDone = [true, true, true, true, true, false, false];
+// TODO: нет реального дневного лога активности в users (только суммарный streak) —
+// добавить эндпоинт/лист daily_activity, чтобы точно знать, какие именно дни закрыты.
+// Пока грубо закрашиваем последние N дней недели по числу streak.
+function approximateWeek(streak) {
+  return Array.from({ length: 7 }, (_, i) => i >= 7 - Math.min(streak, 7));
+}
 
 const CATEGORIES = [
   { id: "tasks", label: "Задания" },
@@ -35,10 +40,13 @@ const achievements = [
   { icon: Gem, title: "Полиглот", desc: "начал изучать второй язык", unlocked: false, cat: "rare" },
 ];
 
-export default function ProgressScreen() {
-  const [xp] = useState(1240);
+export default function ProgressScreen({ user }) {
+  const xp = user?.xp ?? 0;
   const [category, setCategory] = useState("tasks");
-  const xpToNext = 1500;
+  const xpToNext = Math.ceil((xp + 1) / 500) * 500; // грубая прикидка следующего порога, пока нет реальной формулы уровней
+  const displayName = user?.first_name || user?.username || "Ты";
+  const level = user?.level || "—";
+  const streak = user?.streak ?? 0;
 
   const shown = achievements.filter((a) => a.cat === category);
   const unlockedInCat = shown.filter((a) => a.unlocked).length;
@@ -46,13 +54,13 @@ export default function ProgressScreen() {
 
   return (
     <div className="px-6 pt-6 pb-2 flex-1 flex flex-col overflow-hidden">
-      <p className="text-xs font-bold tracking-widest uppercase" style={{ color: tokens.textSecondary }}>Denis · уровень A1.2</p>
+      <p className="text-xs font-bold tracking-widest uppercase" style={{ color: tokens.textSecondary }}>{displayName} · уровень {level}</p>
       <h1 className="text-3xl font-extrabold mt-1" style={{ color: tokens.textPrimary }}>Прогресс</h1>
 
       <div className="rounded-2xl px-4 py-3.5 mt-4" style={{ background: tokens.card }}>
         <div className="flex items-center justify-between mb-2">
           <span className="text-[13px] font-bold" style={{ color: tokens.textPrimary }}>{xp} XP</span>
-          <span className="text-[12px]" style={{ color: tokens.textSecondary }}>до A1.3 — {xpToNext - xp} XP</span>
+          <span className="text-[12px]" style={{ color: tokens.textSecondary }}>до следующего уровня — {xpToNext - xp} XP</span>
         </div>
         <div className="h-2.5 rounded-full overflow-hidden" style={{ background: tokens.track }}>
           <div className="h-full rounded-full" style={{ width: `${(xp / xpToNext) * 100}%`, background: tokens.accentGradient }} />
@@ -62,17 +70,20 @@ export default function ProgressScreen() {
       <div className="rounded-2xl px-5 py-4 mt-3" style={{ background: tokens.card }}>
         <div className="flex items-center gap-2">
           <Flame size={20} color={tokens.accentOchre} fill={tokens.accentOchre} />
-          <span className="font-extrabold text-[18px]" style={{ color: tokens.textPrimary }}>7 дней подряд</span>
+          <span className="font-extrabold text-[18px]" style={{ color: tokens.textPrimary }}>{streak} дней подряд</span>
         </div>
         <div className="flex justify-between mt-3.5">
-          {weekDays.map((d, i) => (
+          {weekDays.map((d, i) => {
+            const weekDone = approximateWeek(streak);
+            return (
             <div key={d} className="flex flex-col items-center gap-1.5">
               <div className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: weekDone[i] ? tokens.accentGradient : tokens.track }}>
                 {weekDone[i] && <Flame size={13} color="#FBF9F4" fill="#FBF9F4" />}
               </div>
               <span className="text-[10px] font-semibold" style={{ color: tokens.textSecondary }}>{d}</span>
             </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 
