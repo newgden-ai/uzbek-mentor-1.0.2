@@ -1,5 +1,6 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { tokens } from "./theme.js";
+import { getCurrentUser, setUserLevel as apiSetUserLevel } from "./api.js";
 import BottomNav from "./components/BottomNav.jsx";
 import HomeScreen from "./screens/HomeScreen.jsx";
 import PathScreen from "./screens/PathScreen.jsx";
@@ -9,14 +10,18 @@ import DictionaryScreen from "./screens/DictionaryScreen.jsx";
 
 export default function App() {
   const [tab, setTab] = useState("home");
-  // topicFilter !== null → тренажёр должен запросить очередь только по этой теме
-  // (пока просто прокидывается в TrainerScreen, реальная фильтрация — когда подключим getQueue)
   const [topicFilter, setTopicFilter] = useState(null);
-  // TODO: userLevel должен приходить из user.level через api.js (getCurrentUser), а не
-  // жить только в памяти вкладки — иначе после перезахода в мини-апп выбор слетит.
-  const [userLevel, setUserLevel] = useState(null);
+  const [user, setUser] = useState(null);
+  const [userLevel, setUserLevelState] = useState(undefined); // undefined = ещё грузится, null = не выбран
   const [placementLevel, setPlacementLevel] = useState(null);
   const isLesson = tab === "trainer";
+
+  useEffect(() => {
+    getCurrentUser().then((u) => {
+      setUser(u);
+      setUserLevelState(u.level || null);
+    });
+  }, []);
 
   const startTraining = (topic, subLesson = null) => {
     setTopicFilter({ ...topic, subLesson });
@@ -30,10 +35,9 @@ export default function App() {
     setTab("home");
   };
 
-  // level === null → пользователь нажал "изменить" в Доме, просто сбрасываем без теста
   const selectLevel = (level) => {
     if (!level) {
-      setUserLevel(null);
+      setUserLevelState(null); // "изменить" в Доме — просто открыть выбор заново
       return;
     }
     setPlacementLevel(level);
@@ -41,15 +45,16 @@ export default function App() {
     setTab("trainer");
   };
 
-  const finishPlacement = (confirmedLevel) => {
-    setUserLevel(confirmedLevel);
+  const finishPlacement = async (confirmedLevel) => {
+    await apiSetUserLevel(confirmedLevel);
+    setUserLevelState(confirmedLevel);
     setPlacementLevel(null);
     setTab("home");
   };
 
   return (
     <div className="h-screen w-full flex flex-col" style={{ background: tokens.bgGradient }}>
-      {tab === "home" && <HomeScreen userLevel={userLevel} onSelectLevel={selectLevel} />}
+      {tab === "home" && userLevel !== undefined && <HomeScreen user={user} userLevel={userLevel} onSelectLevel={selectLevel} />}
       {tab === "path" && (
         <PathScreen
           onOpenLesson={(topic, sub) => startTraining(topic, sub)}
@@ -64,7 +69,7 @@ export default function App() {
           onExit={exitTraining}
         />
       )}
-      {tab === "progress" && <ProgressScreen />}
+      {tab === "progress" && <ProgressScreen user={user} />}
       {tab === "dictionary" && <DictionaryScreen />}
       {!isLesson && <BottomNav active={tab} onChange={setTab} />}
     </div>
