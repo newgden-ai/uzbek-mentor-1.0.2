@@ -1,6 +1,0 @@
-# Этот файл — только для справки, что нужно бэкенду.
-# В самом проекте .env не используется и не коммитится — вместо этого
-# значение задаётся один раз как секрет в GitHub (Settings → Secrets and
-# variables → Actions → New repository secret → VITE_API_URL), и подставляется
-# автоматически при сборке через GitHub Actions. См. README.md.
-VITE_API_URL=https://script.google.com/macros/s/ВАШ_DEPLOYMENT_ID/exec
