@@ -15,3 +15,4 @@ export async function buildPlacementQueue(selectedLevel, maxQuestions = 30) {
   const shuffled = [...pool].sort(() => Math.random() - 0.5).slice(0, maxQuestions);
   return shuffled.map((word) => buildChoice(word, pool));
 }
+
