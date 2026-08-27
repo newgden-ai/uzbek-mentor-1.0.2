@@ -1,0 +1,17 @@
+import { getWords } from "../api.js";
+import { buildChoice } from "./exerciseBuilder.js";
+
+const LEVEL_ORDER = ["A1", "A2", "B1", "B2"];
+
+// Собирает placement-тест: слова выбранного уровня и всех уровней ниже,
+// случайные, до maxQuestions штук — все вопросы в формате "выбери перевод"
+// (проще и надёжнее всего для быстрой проверки уровня).
+export async function buildPlacementQueue(selectedLevel, maxQuestions = 30) {
+  const allowedLevels = LEVEL_ORDER.slice(0, LEVEL_ORDER.indexOf(selectedLevel) + 1);
+
+  const results = await Promise.all(allowedLevels.map((level) => getWords({ level })));
+  const pool = results.flatMap((r) => r.words || []);
+
+  const shuffled = [...pool].sort(() => Math.random() - 0.5).slice(0, maxQuestions);
+  return shuffled.map((word) => buildChoice(word, pool));
+}
