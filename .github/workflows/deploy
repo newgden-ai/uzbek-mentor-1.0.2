@@ -4,7 +4,7 @@ name: Deploy to GitHub Pages
 # всё происходит на серверах GitHub, локальный компьютер не участвует.
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   workflow_dispatch:
 
 permissions:
