@@ -1,5 +1,6 @@
 import React, { useState } from "react";
-import { ChevronRight, Flame } from "lucide-react";
+import { ChevronRight } from "lucide-react";
+import { TeaBowl } from "../components/TeaBowl.jsx";
 import { tokens, levelColor } from "../theme.js";
 
 const skills = [
@@ -10,10 +11,10 @@ const skills = [
   { label: "Reading", value: 1, max: 5 },
 ];
 
-const checks = [
-  { id: "srs", title: "Повторения сегодня", subtitle: "SRS · 14 слов ждут повтора" },
-  { id: "new", title: "Новые слова", subtitle: "дневная цель · 10 слов" },
-  { id: "topic", title: "Тест по теме «Местоимения»", subtitle: "12 вопросов · закрепление" },
+const MODES = [
+  { id: "all", title: "Стандартное изучение", subtitle: "повтор → новые слова → практика" },
+  { id: "new", title: "Только новые слова", subtitle: "без повторений, изучаем дальше" },
+  { id: "review", title: "Только повторение", subtitle: "закрепляем уже пройденное" },
 ];
 
 const LEVEL_OPTIONS = [
@@ -61,9 +62,8 @@ function LevelPicker({ onSelectLevel }) {
   );
 }
 
-export default function HomeScreen({ user, userLevel, onSelectLevel }) {
-  const [active, setActive] = useState("srs");
-  const activeCheck = checks.find((c) => c.id === active);
+export default function HomeScreen({ user, userLevel, onSelectLevel, onStartTraining, onOpenGame, onOpenTranslator }) {
+  const [mode, setMode] = useState("all");
   const displayName = user?.first_name || user?.username || "друг";
   const streak = user?.streak ?? 0;
 
@@ -76,7 +76,7 @@ export default function HomeScreen({ user, userLevel, onSelectLevel }) {
           Assalomu alaykum, {displayName}
         </p>
         <div className="flex items-center gap-1 rounded-full px-3 py-1" style={{ background: tokens.card }}>
-          <Flame size={14} color={tokens.accentOchre} />
+          <TeaBowl size={16} />
           <span className="text-xs font-bold" style={{ color: tokens.textPrimary }}>{streak}</span>
         </div>
       </div>
@@ -96,13 +96,13 @@ export default function HomeScreen({ user, userLevel, onSelectLevel }) {
         Слово забывается, если не повторить вовремя
       </h2>
 
-      <div className="flex flex-col gap-3 mt-4">
-        {checks.map((c) => {
-          const isActive = c.id === active;
+      <div className="flex flex-col gap-2.5 mt-4">
+        {MODES.map((m) => {
+          const isActive = m.id === mode;
           return (
             <button
-              key={c.id}
-              onClick={() => setActive(c.id)}
+              key={m.id}
+              onClick={() => setMode(m.id)}
               className="w-full text-left rounded-2xl px-5 py-4 flex items-center justify-between"
               style={{
                 background: isActive ? tokens.cardActive : tokens.card,
@@ -110,17 +110,36 @@ export default function HomeScreen({ user, userLevel, onSelectLevel }) {
               }}
             >
               <div>
-                <p className="font-bold text-[15px]" style={{ color: tokens.textPrimary }}>{c.title}</p>
-                <p className="text-xs mt-0.5" style={{ color: tokens.textSecondary }}>{c.subtitle}</p>
+                <p className="font-bold text-[15px]" style={{ color: tokens.textPrimary }}>{m.title}</p>
+                <p className="text-xs mt-0.5" style={{ color: tokens.textSecondary }}>{m.subtitle}</p>
               </div>
-              <ChevronRight size={18} color={tokens.textSecondary} />
+              {isActive && <ChevronRight size={18} color={tokens.accentTeal} />}
             </button>
           );
         })}
       </div>
 
+      <div className="flex gap-2.5 mt-3">
+        <button
+          onClick={onOpenGame}
+          className="flex-1 text-left rounded-2xl px-4 py-4"
+          style={{ background: tokens.cardActive, border: `1px solid ${tokens.accentOchre}40` }}
+        >
+          <p className="font-bold text-[14px]" style={{ color: tokens.textPrimary }}>🔤 Найди слова</p>
+          <p className="text-[11.5px] mt-0.5" style={{ color: tokens.textSecondary }}>филворд из выученного</p>
+        </button>
+        <button
+          onClick={onOpenTranslator}
+          className="flex-1 text-left rounded-2xl px-4 py-4"
+          style={{ background: tokens.cardActive, border: `1px solid ${tokens.accentTeal}40` }}
+        >
+          <p className="font-bold text-[14px]" style={{ color: tokens.textPrimary }}>🌐 Переводчик</p>
+          <p className="text-[11.5px] mt-0.5" style={{ color: tokens.textSecondary }}>любой текст + похожие слова</p>
+        </button>
+      </div>
+
       <div className="rounded-2xl px-5 py-5 mt-4" style={{ background: tokens.card }}>
-        <p className="font-bold text-[17px]" style={{ color: tokens.textPrimary }}>{activeCheck.title}</p>
+        <p className="font-bold text-[17px]" style={{ color: tokens.textPrimary }}>Навыки этой недели</p>
         <p className="text-[13px] mt-1 leading-relaxed" style={{ color: tokens.textSecondary }}>
           Сложность подстраивается под твой уровень после каждого блока ответов.
         </p>
@@ -137,7 +156,7 @@ export default function HomeScreen({ user, userLevel, onSelectLevel }) {
           ))}
         </div>
 
-        <button className="w-full mt-6 rounded-full py-3.5 font-bold text-[15px]" style={{ background: tokens.accentGradient, color: "#FBF9F4" }}>
+        <button onClick={() => onStartTraining(mode)} className="w-full mt-6 rounded-full py-3.5 font-bold text-[15px]" style={{ background: tokens.accentGradient, color: "#FBF9F4" }}>
           Запустить тренировку
         </button>
       </div>

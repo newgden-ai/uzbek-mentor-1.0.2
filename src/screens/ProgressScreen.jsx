@@ -1,12 +1,15 @@
-import React, { useState } from "react";
-import { Flame, Trophy, Zap, Lock, Target, Ghost, Gem, Ticket, Check } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { Lock, Ticket, Check } from "lucide-react";
+import { TeaBowl } from "../components/TeaBowl.jsx";
 import { tokens } from "../theme.js";
-import { redeemCode } from "../api.js";
+import { redeemCode, getStats, getPath } from "../api.js";
+import { CATEGORIES, buildAchievements } from "../data/achievements.js";
 
 const weekDays = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
-// TODO: нет реального дневного лога активности в users (только суммарный streak) —
-// добавить эндпоинт/лист daily_activity, чтобы точно знать, какие именно дни закрыты.
-// Пока грубо закрашиваем последние N дней недели по числу streak.
+// 3 — точная недельная активность приходит с бэкенда (Code.gs: computeWeekActivity,
+// на основе листа daily_activity). approximateWeek оставлен как fallback только
+// для демо-режима без API (VITE_API_URL не задан) или если бэкенд ещё старый
+// и не прислал weekActivity — чтобы экран не падал.
 function approximateWeek(streak) {
   return Array.from({ length: 7 }, (_, i) => i >= 7 - Math.min(streak, 7));
 }
@@ -65,36 +68,6 @@ function PromoCodeCard({ onRedeemed }) {
   );
 }
 
-const CATEGORIES = [
-  { id: "tasks", label: "Задания" },
-  { id: "streak", label: "Серии" },
-  { id: "words", label: "Слова" },
-  { id: "humor", label: "Юмор" },
-  { id: "rare", label: "Редкие" },
-];
-
-// превью системы достижений — полный набор ~1000 делаем отдельным заходом,
-// логика названий уже зафиксирована по категориям
-const achievements = [
-  { icon: Zap, title: "Разогрев", desc: "10 заданий выполнено", unlocked: true, cat: "tasks" },
-  { icon: Zap, title: "Полумарафон", desc: "21 задание выполнено", unlocked: true, cat: "tasks" },
-  { icon: Trophy, title: "Марафонец", desc: "42 задания выполнено", unlocked: false, cat: "tasks" },
-  { icon: Trophy, title: "Центурион", desc: "100 заданий выполнено", unlocked: false, cat: "tasks" },
-  { icon: Flame, title: "Старт есть", desc: "3 дня подряд", unlocked: true, cat: "streak" },
-  { icon: Flame, title: "Неделя без слива", desc: "7 дней подряд", unlocked: true, cat: "streak" },
-  { icon: Flame, title: "Железная привычка", desc: "30 дней подряд", unlocked: false, cat: "streak" },
-  { icon: Flame, title: "Машина дисциплины", desc: "100 дней подряд", unlocked: false, cat: "streak" },
-  { icon: Target, title: "Первые шаги", desc: "100 слов выучено", unlocked: true, cat: "words" },
-  { icon: Target, title: "Словарный рывок", desc: "500 слов выучено", unlocked: false, cat: "words" },
-  { icon: Target, title: "Ты уже говоришь", desc: "1 000 слов выучено", unlocked: false, cat: "words" },
-  { icon: Target, title: "Живой язык", desc: "3 000 слов выучено", unlocked: false, cat: "words" },
-  { icon: Ghost, title: "Ночной самурай", desc: "занимался в 3 часа ночи", unlocked: true, cat: "humor" },
-  { icon: Ghost, title: "Ну почти 😅", desc: "10 ошибок подряд", unlocked: false, cat: "humor" },
-  { icon: Ghost, title: "Зато честно", desc: "50 ошибок за всё время", unlocked: false, cat: "humor" },
-  { icon: Gem, title: "Первый день", desc: "первая тренировка в приложении", unlocked: true, cat: "rare" },
-  { icon: Gem, title: "Полиглот", desc: "начал изучать второй язык", unlocked: false, cat: "rare" },
-];
-
 export default function ProgressScreen({ user }) {
   const xp = user?.xp ?? 0;
   const [category, setCategory] = useState("tasks");
@@ -102,8 +75,22 @@ export default function ProgressScreen({ user }) {
   const displayName = user?.first_name || user?.username || "Ты";
   const level = user?.level || "—";
   const streak = user?.streak ?? 0;
+  const weekActivity = Array.isArray(user?.weekActivity) ? user.weekActivity : approximateWeek(streak);
   const [tier, setTier] = useState(user?.tier || "free");
+  const [stats, setStats] = useState(null);
+  const [topics, setTopics] = useState(null);
 
+  useEffect(() => {
+    let cancelled = false;
+    getStats().then((s) => { if (!cancelled && !s.error) setStats(s); });
+    getPath().then((p) => { if (!cancelled && !p.error) setTopics(p.topics); });
+    return () => { cancelled = true; };
+  }, []);
+
+  // 1 — достижения считаются от реальной статистики (см. src/data/achievements.js);
+  // пока stats ещё грузится — считаем список пустым, чтобы не мигать неверными
+  // unlocked=false для всех и не путать пользователя на долю секунды.
+  const achievements = stats ? buildAchievements(stats, topics) : [];
   const shown = achievements.filter((a) => a.cat === category);
   const unlockedInCat = shown.filter((a) => a.unlocked).length;
   const totalUnlocked = achievements.filter((a) => a.unlocked).length;
@@ -132,26 +119,27 @@ export default function ProgressScreen({ user }) {
 
       <div className="rounded-2xl px-5 py-4 mt-3" style={{ background: tokens.card }}>
         <div className="flex items-center gap-2">
-          <Flame size={20} color={tokens.accentOchre} fill={tokens.accentOchre} />
+          <TeaBowl size={22} />
           <span className="font-extrabold text-[18px]" style={{ color: tokens.textPrimary }}>{streak} дней подряд</span>
         </div>
         <div className="flex justify-between mt-3.5">
-          {weekDays.map((d, i) => {
-            const weekDone = approximateWeek(streak);
-            return (
+          {weekDays.map((d, i) => (
             <div key={d} className="flex flex-col items-center gap-1.5">
-              <div className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: weekDone[i] ? tokens.accentGradient : tokens.track }}>
-                {weekDone[i] && <Flame size={13} color="#FBF9F4" fill="#FBF9F4" />}
+              <div className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: weekActivity[i] ? tokens.accentGradient : tokens.track }}>
+                {weekActivity[i] && <TeaBowl size={15} />}
               </div>
               <span className="text-[10px] font-semibold" style={{ color: tokens.textSecondary }}>{d}</span>
             </div>
-            );
-          })}
+          ))}
         </div>
       </div>
 
       <div className="grid grid-cols-3 gap-2.5 mt-3">
-        {[{ label: "Слов выучено", value: "312" }, { label: "Заданий", value: "1 084" }, { label: "Точность", value: "87%" }].map((s) => (
+        {[
+          { label: "Слов освоено", value: stats ? String(stats.wordsMastered) : "—" },
+          { label: "Заданий", value: stats ? stats.tasksDone.toLocaleString("ru-RU") : "—" },
+          { label: "Точность", value: stats && stats.tasksDone > 0 ? `${Math.round((1 - stats.mistakesTotal / stats.tasksDone) * 100)}%` : "—" },
+        ].map((s) => (
           <div key={s.label} className="rounded-2xl px-3 py-3 text-center" style={{ background: tokens.card }}>
             <p className="font-extrabold text-[17px]" style={{ color: tokens.textPrimary }}>{s.value}</p>
             <p className="text-[10.5px] mt-0.5 leading-tight" style={{ color: tokens.textSecondary }}>{s.label}</p>
@@ -162,7 +150,7 @@ export default function ProgressScreen({ user }) {
       <div className="mt-5 flex-1 pb-4 overflow-y-auto">
         <div className="flex items-center justify-between mb-3">
           <p className="text-xs font-bold tracking-widest uppercase" style={{ color: tokens.textSecondary }}>Достижения</p>
-          <span className="text-[12px] font-bold" style={{ color: tokens.accentTeal }}>{totalUnlocked} / 128 →</span>
+          <span className="text-[12px] font-bold" style={{ color: tokens.accentTeal }}>{totalUnlocked} / {achievements.length} →</span>
         </div>
 
         <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
