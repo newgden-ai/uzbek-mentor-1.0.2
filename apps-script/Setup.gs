@@ -18,11 +18,18 @@ function setupSheets() {
     "last_active", "created_at",
   ]);
   addColumnsIfMissing(ss, "users", ["tier", "hints_used_today", "hints_reset_date"]);
+  // 1 — счётчики для системы достижений: max_streak — лучший streak за всё
+  // время (не должен "сгорать", если пользователь потерял текущую серию),
+  // mistakes_streak_* — серия ошибок подряд (для "юмор"-достижений),
+  // hours_active — часы суток (0-23, через запятую), когда пользователь
+  // хоть раз отвечал на задание — для достижений вида "занимался ночью".
+  addColumnsIfMissing(ss, "users", ["max_streak", "mistakes_streak_current", "mistakes_streak_max", "hours_active"]);
 
   createIfMissing(ss, "user_words", [
     "user_id", "word_id", "stage", "correct_count", "wrong_count",
     "last_reviewed", "next_review",
   ]);
+  addColumnsIfMissing(ss, "user_words", ["points", "introduced"]);
 
   createIfMissing(ss, "sessions", [
     "session_id", "user_id", "type", "date", "score", "total",
@@ -40,7 +47,12 @@ function setupSheets() {
 
   createIfMissing(ss, "app_settings", ["key", "value"]);
 
-  Logger.log("Готово: служебные листы созданы (users, user_words, sessions, admins, reading_articles, app_settings).");
+  // 3 — реальный дневной лог активности: 1 строка = 1 юзер + 1 календарный день
+  // (UTC, формат yyyy-MM-dd), на его основе точно считаем streak и недельную
+  // полоску в "Прогрессе" вместо грубой прикидки по суммарному числу streak.
+  createIfMissing(ss, "daily_activity", ["user_id", "date", "count"]);
+
+  Logger.log("Готово: служебные листы созданы (users, user_words, sessions, admins, reading_articles, app_settings, daily_activity).");
 }
 
 function createIfMissing(ss, name, headers) {
