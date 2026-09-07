@@ -33,6 +33,9 @@ jobs:
           # Actions → New repository secret → VITE_API_URL. Секреты хранятся у GitHub,
           # не на чьём-либо компьютере.
           VITE_API_URL: ${{ secrets.VITE_API_URL }}
+          # 2 — blockId рекламного блока AdsGram (см. .env.example). Тем же способом:
+          # New repository secret → VITE_ADSGRAM_BLOCK_ID.
+          VITE_ADSGRAM_BLOCK_ID: ${{ secrets.VITE_ADSGRAM_BLOCK_ID }}
 
       - uses: actions/upload-pages-artifact@v3
         with:
