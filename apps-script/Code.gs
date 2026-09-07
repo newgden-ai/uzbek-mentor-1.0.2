@@ -5,10 +5,27 @@
  */
 
 const BOT_TOKEN = PropertiesService.getScriptProperties().getProperty("BOT_TOKEN");
-// Стадия → через сколько дней следующий повтор (соответствует стадиям здания в UI)
-const INTERVAL_DAYS = { 1: 1, 2: 3, 3: 7, 4: 14, 5: 14 };
-const DECAY_AFTER_DAYS = 10; // после скольки дней без повтора здание начинает тускнеть
-const DECAY_FULL_DAYS = 20; // к какому дню здание становится полностью чб
+// 1.6/2.3 — баллы слова: 0-15, скрыто от пользователя. Визуальная стадия здания = min(5, points).
+// Интервал до следующего повтора растёт с баллами; после 6 — раз в месяц, после 10 — раз в квартал.
+const POINTS_INTERVAL_DAYS = { 1: 1, 2: 3, 3: 7, 4: 14, 5: 14 };
+const MAX_POINTS = 15;
+const ACTIVE_POOL_SIZE = 20; // сколько новых слов одновременно "в изучении" (1.6)
+
+function intervalForPoints(points) {
+  if (points <= 0) return 0;
+  if (points <= 5) return POINTS_INTERVAL_DAYS[points] || 1;
+  if (points <= 9) return 30; // "изучено хорошо/отлично" — повтор раз в месяц
+  return 90; // "превосходно" (10-15) — повтор раз в квартал
+}
+
+// Полоса освоенности для пиалы с цифрой в Базе (2.3).
+function pointsBand(points) {
+  if (points <= 0) return "none";
+  if (points <= 5) return "poor";
+  if (points <= 7) return "good";
+  if (points <= 9) return "great";
+  return "excellent";
+}
 
 // 1.1 — дневные лимиты подсказок по тарифам. По выходным — база + половина базы.
 const HINT_LIMITS = { free: 3, premium: 10, tester: Infinity };
@@ -50,7 +67,7 @@ function doGet(e) {
         result = getOrCreateUser(e.parameter.init_data);
         break;
       case "queue":
-        result = getQueue(e.parameter.user_id, Number(e.parameter.count) || 10);
+        result = getQueue(e.parameter.user_id, Number(e.parameter.count) || 10, e.parameter.mode);
         break;
       case "dictionary":
         result = getDictionary(e.parameter.user_id, e.parameter.query, e.parameter.level);
@@ -60,6 +77,15 @@ function doGet(e) {
         break;
       case "hintStatus":
         result = getHintStatus(e.parameter.user_id);
+        break;
+      case "stats":
+        result = getStats(e.parameter.user_id);
+        break;
+      case "translate":
+        result = translateText(e.parameter.text, e.parameter.sl, e.parameter.tl);
+        break;
+      case "similarWords":
+        result = findSimilarWords(e.parameter.query, Number(e.parameter.limit) || 8);
         break;
       default:
         result = { error: "unknown action: " + action };
@@ -77,6 +103,9 @@ function doPost(e) {
     switch (body.action) {
       case "submitAnswer":
         result = submitAnswer(body.user_id, body.word_id, body.correct);
+        break;
+      case "introduceWord":
+        result = introduceWord(body.user_id, body.word_id);
         break;
       case "adminAddWord":
         result = adminAddWord(body.admin_user_id, body.word);
@@ -159,15 +188,17 @@ function findRowIndex(sh, headerName, value) {
 }
 
 // ---------------------------------------------------------------------------
-// words — читаем мастер-словарь ПО ИНДЕКСУ КОЛОНКИ (заголовки в файле не
-// нормализованы — есть лишние пробелы типа " ex2", "|ex1_ru "), ничего не
-// выдумываем, просто аккуратно парсим то, что есть.
-// 0:ID 1:Тема№ 2:Тема 3:Русский 4:UZ 5:Уровень 6:АудиоURL
-// 7:ex1_uz 8:ex1_ru 9:ex2_uz 10:ex2_ru 11:ex3_uz 12:ex3_ru 13:ex4_uz 14:ex4_ru 15:ex5_uz 16:ex5_ru
+// words — читаем мастер-словарь ПО ИНДЕКСУ КОЛОНКИ. Раскладка новой таблицы
+// (версия 2026-08), аудио у каждого примера своё:
+// 0:ID 1:Тема№ 2:Тема 3:Русский 4:UZ 5:Уровень 6:АудиоURL(слово)
+// 7:ex1 8:ex1_ru 9:ex1_audio_url 10:ex2 11:ex2_ru 12:ex2_audio_url
+// 13:ex3 14:ex3_ru 15:ex3_audio_url 16:ex4 17:ex4_ru 18:ex4_audio_url
+// 19:ex5 20:ex5_ru 21:ex5_audio_url
 // ---------------------------------------------------------------------------
-const WCOL = { ID: 0, TOPIC: 2, RU: 3, UZ: 4, LEVEL: 5 };
-const WCOL_EX_UZ = [7, 9, 11, 13, 15];
-const WCOL_EX_RU = [8, 10, 12, 14, 16];
+const WCOL = { ID: 0, TOPIC: 2, RU: 3, UZ: 4, LEVEL: 5, AUDIO: 6 };
+const WCOL_EX_UZ = [7, 10, 13, 16, 19];
+const WCOL_EX_RU = [8, 11, 14, 17, 20];
+const WCOL_EX_AUDIO = [9, 12, 15, 18, 21];
 
 function readWordRows() {
   const sh = sheet("words");
@@ -180,7 +211,7 @@ function rowToWord(row) {
   const examples = [];
   for (let i = 0; i < 5; i++) {
     const uz = row[WCOL_EX_UZ[i]];
-    if (uz) examples.push({ uz, ru: row[WCOL_EX_RU[i]] });
+    if (uz) examples.push({ uz, ru: row[WCOL_EX_RU[i]], audioUrl: row[WCOL_EX_AUDIO[i]] || "" });
   }
   return {
     id: String(row[WCOL.ID]),
@@ -188,6 +219,7 @@ function rowToWord(row) {
     uz: row[WCOL.UZ],
     topic: row[WCOL.TOPIC],
     level: row[WCOL.LEVEL],
+    audioUrl: row[WCOL.AUDIO] || "",
     examples,
   };
 }
@@ -208,20 +240,116 @@ function getOrCreateUser(initData) {
 
   const sh = sheet("users");
   const row = findRowIndex(sh, "user_id", tgUser.id);
-  const now = new Date().toISOString();
+  const now = new Date();
+  const nowIso = now.toISOString();
 
   if (row === -1) {
-    sh.appendRow([tgUser.id, tgUser.username || "", tgUser.first_name || "", "", 0, 0, now, now]);
-    return { user_id: tgUser.id, username: tgUser.username, level: "", xp: 0, streak: 0 };
+    sh.appendRow([tgUser.id, tgUser.username || "", tgUser.first_name || "", "", 0, 0, nowIso, nowIso]);
+    return {
+      user_id: tgUser.id,
+      username: tgUser.username,
+      level: "",
+      xp: 0,
+      streak: 0,
+      weekActivity: computeWeekActivity({}, now),
+    };
   }
 
   const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
   const values = sh.getRange(row, 1, 1, headers.length).getValues()[0];
-  sh.getRange(row, headers.indexOf("last_active") + 1).setValue(now);
+  sh.getRange(row, headers.indexOf("last_active") + 1).setValue(nowIso);
+
+  // 3 — пересчитываем streak из реального дневного лога вместо хранимого
+  // значения (оно раньше нигде не обновлялось) и синхронизируем users.streak,
+  // чтобы им можно было пользоваться и в других местах (достижения и т.п.).
+  const dateSet = getActiveDateSet(tgUser.id);
+  const streak = computeStreak(dateSet, now);
+  const weekActivity = computeWeekActivity(dateSet, now);
+  const streakCol = headers.indexOf("streak") + 1;
+  if (streakCol > 0) sh.getRange(row, streakCol).setValue(streak);
 
   const obj = {};
   headers.forEach((h, i) => (obj[h] = values[i]));
+  obj.streak = streak;
+  obj.weekActivity = weekActivity;
   return obj;
+}
+
+// ---------------------------------------------------------------------------
+// 3 — daily_activity: реальный дневной лог активности. Раньше users.streak
+// нигде не обновлялся (создавался нулём и так и оставался), а на фронте
+// недельная полоска в "Прогрессе" грубо прикидывалась по последнему числу
+// streak. Теперь streak и полоска считаются от фактических дней с активностью.
+// ---------------------------------------------------------------------------
+function findDailyActivityRow(sh, userId, dateKey) {
+  const values = sh.getDataRange().getValues();
+  const headers = values[0];
+  const uCol = headers.indexOf("user_id");
+  const dCol = headers.indexOf("date");
+  for (let i = 1; i < values.length; i++) {
+    if (String(values[i][uCol]) === String(userId) && String(values[i][dCol]) === dateKey) {
+      return i + 1; // 1-indexed sheet row
+    }
+  }
+  return -1;
+}
+
+// Отмечает, что userId сегодня сделал хотя бы одно упражнение (правильное или
+// нет — для streak неважно, важен сам факт активности). Вызывается из submitAnswer.
+function logDailyActivity(userId, date) {
+  const sh = sheet("daily_activity");
+  const dateKey = todayKey(date);
+  const row = findDailyActivityRow(sh, userId, dateKey);
+  if (row === -1) {
+    sh.appendRow([userId, dateKey, 1]);
+    return;
+  }
+  const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  const cCol = headers.indexOf("count") + 1;
+  sh.getRange(row, cCol).setValue((sh.getRange(row, cCol).getValue() || 0) + 1);
+}
+
+// Множество дат ('yyyy-MM-dd', UTC) с активностью конкретного юзера — базовые
+// данные для computeStreak и computeWeekActivity.
+function getActiveDateSet(userId) {
+  const rows = readRows("daily_activity");
+  const set = {};
+  rows.forEach((r) => {
+    if (String(r.user_id) === String(userId)) set[r.date] = true;
+  });
+  return set;
+}
+
+// Текущий streak по реальному логу: идём подряд назад от сегодня, пока есть
+// активность. Если сегодня ещё не позанимался — не обнуляем streak раньше
+// времени, начинаем счёт со вчера (иначе streak будет мигать в 0 каждое утро
+// до первой тренировки за день).
+function computeStreak(dateSet, now) {
+  const cursor = new Date(now);
+  if (!dateSet[todayKey(cursor)]) cursor.setUTCDate(cursor.getUTCDate() - 1);
+  let streak = 0;
+  while (dateSet[todayKey(cursor)]) {
+    streak++;
+    cursor.setUTCDate(cursor.getUTCDate() - 1);
+  }
+  return streak;
+}
+
+// Недельная полоска для экрана "Прогресс": Пн..Вс текущей недели (UTC), 7
+// булевых значений по факту активности в этот день. Заменяет approximateWeek
+// на фронте точными данными.
+function computeWeekActivity(dateSet, now) {
+  const monday = new Date(now);
+  const day = monday.getUTCDay(); // 0=Вс, 1=Пн, ..., 6=Сб
+  const diffToMonday = day === 0 ? 6 : day - 1;
+  monday.setUTCDate(monday.getUTCDate() - diffToMonday);
+  const week = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(monday);
+    d.setUTCDate(monday.getUTCDate() + i);
+    week.push(Boolean(dateSet[todayKey(d)]));
+  }
+  return week;
 }
 
 // ---------------------------------------------------------------------------
@@ -231,32 +359,108 @@ function daysBetween(a, b) {
   return Math.floor((b - a) / (1000 * 60 * 60 * 24));
 }
 
-function computeDecay(stage, lastReviewed) {
-  if (stage < 5 || !lastReviewed) return 0;
-  const days = daysBetween(new Date(lastReviewed), new Date());
-  if (days <= DECAY_AFTER_DAYS) return 0;
-  return Math.min(1, (days - DECAY_AFTER_DAYS) / (DECAY_FULL_DAYS - DECAY_AFTER_DAYS));
+// "Раз в месяц/раз в квартал со всех пройденных слов снимается балл" (1.6) —
+// считаем эффективные баллы на лету (не переписываем таблицу при каждом чтении),
+// применяются реально только при следующем настоящем ответе через submitAnswer.
+function effectivePoints(rawPoints, lastReviewed) {
+  if (rawPoints <= 0 || !lastReviewed) return rawPoints;
+  const intervalDays = rawPoints >= 10 ? 90 : 30;
+  const daysSince = daysBetween(new Date(lastReviewed), new Date());
+  const periodsElapsed = Math.floor(daysSince / intervalDays);
+  return Math.max(0, rawPoints - periodsElapsed);
 }
 
-function getQueue(userId, count) {
-  const words = readWordRows().map(rowToWord);
+// Визуальное затухание здания (0..1) — только для points >= 5 (уже "достроено"),
+// тускнеет после 10 дней без повтора, полностью чб к 20-му.
+function computeDecay(points, lastReviewed) {
+  if (points < 5 || !lastReviewed) return 0;
+  const days = daysBetween(new Date(lastReviewed), new Date());
+  if (days <= 10) return 0;
+  return Math.min(1, (days - 10) / 10);
+}
+
+// ---------------------------------------------------------------------------
+// 1.6 — SRS на баллах + состав сессии: сначала повтор просроченных слов,
+// потом изучение новых (до ACTIVE_POOL_SIZE одновременно "в работе"),
+// потом практика уже показанных, но ещё не отточенных (points 1-4).
+// mode: "all" (по умолчанию) | "new" (только изучение) | "review" (только повтор)
+// ---------------------------------------------------------------------------
+function getQueue(userId, count, mode) {
+  mode = mode || "all";
+  const words = readWordRows().map(rowToWord); // порядок как в листе (по темам/уровням)
   const userWords = readRows("user_words").filter((r) => String(r.user_id) === String(userId));
   const byWordId = {};
   userWords.forEach((r) => (byWordId[r.word_id] = r));
-
   const now = new Date();
-  const due = userWords.filter((r) => r.next_review && new Date(r.next_review) <= now);
-  const dueIds = new Set(due.map((r) => String(r.word_id)));
 
+  const dueReview = userWords.filter((r) => (r.points || 0) > 0 && r.next_review && new Date(r.next_review) <= now);
+  const dueIds = new Set(dueReview.map((r) => String(r.word_id)));
   const dueWords = words.filter((w) => dueIds.has(w.id));
-  const newWords = words.filter((w) => !byWordId[w.id]).slice(0, Math.max(0, count - dueWords.length));
 
-  const queue = [...dueWords, ...newWords].slice(0, count).map((w) => {
+  // Активный пул: первые ACTIVE_POOL_SIZE слов (в порядке листа) с points < 5 —
+  // как только слово "достроено" (points >= 5), место освобождается следующему.
+  const activePool = [];
+  for (const w of words) {
     const uw = byWordId[w.id];
-    return { wordId: w.id, ru: w.ru, uz: w.uz, topic: w.topic, stage: uw ? uw.stage : 0, examples: w.examples };
-  });
+    const points = uw ? uw.points || 0 : 0;
+    if (points < 5) {
+      activePool.push(w);
+      if (activePool.length >= ACTIVE_POOL_SIZE) break;
+    }
+  }
+  const learnWords = activePool.filter((w) => !byWordId[w.id] || !byWordId[w.id].introduced);
+  const practiceWords = activePool.filter((w) => byWordId[w.id] && byWordId[w.id].introduced);
 
-  return { queue };
+  function tag(w, itemMode) {
+    const uw = byWordId[w.id];
+    return {
+      wordId: w.id, ru: w.ru, uz: w.uz, topic: w.topic, audioUrl: w.audioUrl,
+      stage: uw ? uw.stage : 0,
+      points: uw ? uw.points || 0 : 0,
+      examples: w.examples,
+      mode: itemMode,
+    };
+  }
+
+  let items;
+  if (mode === "review") items = dueWords.map((w) => tag(w, "exercise"));
+  else if (mode === "new") items = learnWords.map((w) => tag(w, "learn"));
+  else {
+    items = [
+      ...dueWords.map((w) => tag(w, "exercise")),
+      ...learnWords.map((w) => tag(w, "learn")),
+      ...practiceWords.map((w) => tag(w, "exercise")),
+    ];
+  }
+
+  return { queue: items.slice(0, count) };
+}
+
+// Отмечает слово как "показанное" на карточке изучения (1.6) — баллы не меняются,
+// просто снимает его с этапа "learn" и переводит в "practice" при следующей выдаче очереди.
+function introduceWord(userId, wordId) {
+  const sh = sheet("user_words");
+  const row = getOrCreateUserWordRow(sh, userId, wordId);
+  const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  sh.getRange(row, headers.indexOf("introduced") + 1).setValue(true);
+  return { ok: true };
+}
+
+// Возвращает индекс строки user_words для (userId, wordId), создавая пустую
+// строку с нулевыми значениями, если её ещё нет — используется и submitAnswer, и introduceWord.
+function getOrCreateUserWordRow(sh, userId, wordId) {
+  const existing = findUserWordRow(sh, userId, wordId);
+  if (existing !== -1) return existing;
+  const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  const blank = headers.map((h) => {
+    if (h === "user_id") return userId;
+    if (h === "word_id") return wordId;
+    if (h === "stage" || h === "points" || h === "correct_count" || h === "wrong_count") return 0;
+    if (h === "introduced") return false;
+    return "";
+  });
+  sh.appendRow(blank);
+  return sh.getLastRow();
 }
 
 function findUserWordRow(sh, userId, wordId) {
@@ -274,34 +478,121 @@ function findUserWordRow(sh, userId, wordId) {
 
 function submitAnswer(userId, wordId, correct) {
   const sh = sheet("user_words");
-  const row = findUserWordRow(sh, userId, wordId);
+  const row = getOrCreateUserWordRow(sh, userId, wordId);
+  const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
   const now = new Date().toISOString();
 
-  let stage = 0;
-  if (row !== -1) {
-    const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
-    stage = sh.getRange(row, headers.indexOf("stage") + 1).getValue() || 0;
-  }
-
-  const newStage = correct ? Math.min(stage + 1, 5) : Math.max(stage - 1, 0);
-  const intervalDays = INTERVAL_DAYS[newStage] || 1;
+  const points = sh.getRange(row, headers.indexOf("points") + 1).getValue() || 0;
+  const newPoints = correct ? Math.min(points + 1, MAX_POINTS) : Math.max(points - 1, 0);
+  const newStage = Math.min(5, newPoints);
+  const intervalDays = intervalForPoints(newPoints) || 1;
   const nextReview = new Date(Date.now() + intervalDays * 86400000).toISOString();
 
-  if (row === -1) {
-    sh.appendRow([userId, wordId, newStage, correct ? 1 : 0, correct ? 0 : 1, now, nextReview]);
-  } else {
-    const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
-    sh.getRange(row, headers.indexOf("stage") + 1).setValue(newStage);
-    sh.getRange(row, headers.indexOf("last_reviewed") + 1).setValue(now);
-    sh.getRange(row, headers.indexOf("next_review") + 1).setValue(nextReview);
-    const cCol = headers.indexOf("correct_count") + 1;
-    const wCol = headers.indexOf("wrong_count") + 1;
-    if (correct) sh.getRange(row, cCol).setValue((sh.getRange(row, cCol).getValue() || 0) + 1);
-    else sh.getRange(row, wCol).setValue((sh.getRange(row, wCol).getValue() || 0) + 1);
-  }
+  sh.getRange(row, headers.indexOf("stage") + 1).setValue(newStage);
+  sh.getRange(row, headers.indexOf("points") + 1).setValue(newPoints);
+  sh.getRange(row, headers.indexOf("last_reviewed") + 1).setValue(now);
+  sh.getRange(row, headers.indexOf("next_review") + 1).setValue(nextReview);
+  const cCol = headers.indexOf("correct_count") + 1;
+  const wCol = headers.indexOf("wrong_count") + 1;
+  if (correct) sh.getRange(row, cCol).setValue((sh.getRange(row, cCol).getValue() || 0) + 1);
+  else sh.getRange(row, wCol).setValue((sh.getRange(row, wCol).getValue() || 0) + 1);
 
   bumpXp(userId, correct ? 10 : 2);
-  return { wordId, stage: newStage, nextReview };
+  logDailyActivity(userId, new Date()); // 3 — отмечаем день как активный для streak
+  bumpAchievementCounters(userId, correct, new Date()); // 1 — счётчики для достижений
+  return { wordId, points: newPoints, stage: newStage, nextReview };
+}
+
+// ---------------------------------------------------------------------------
+// 1 — достижения: счётчики, которые нельзя вывести из user_words (серия ошибок
+// подряд — нужен порядок ответов; часы активности; лучший streak за всё время).
+// ---------------------------------------------------------------------------
+function bumpAchievementCounters(userId, correct, now) {
+  const sh = sheet("users");
+  const row = findRowIndex(sh, "user_id", userId);
+  if (row === -1) return;
+  const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  const cellOf = (name) => {
+    const idx = headers.indexOf(name);
+    return idx === -1 ? null : sh.getRange(row, idx + 1);
+  };
+
+  // Серия ошибок подряд — обнуляется правильным ответом, максимум не убывает.
+  const curCell = cellOf("mistakes_streak_current");
+  const maxMistakeCell = cellOf("mistakes_streak_max");
+  if (curCell && maxMistakeCell) {
+    const cur = correct ? 0 : (Number(curCell.getValue()) || 0) + 1;
+    curCell.setValue(cur);
+    if (cur > (Number(maxMistakeCell.getValue()) || 0)) maxMistakeCell.setValue(cur);
+  }
+
+  // Часы суток (UTC), в которые пользователь хоть раз отвечал — для "юмор"-достижений.
+  const hoursCell = cellOf("hours_active");
+  if (hoursCell) {
+    const hour = String(now.getUTCHours());
+    const existing = String(hoursCell.getValue() || "").split(",").filter(Boolean);
+    if (existing.indexOf(hour) === -1) {
+      existing.push(hour);
+      hoursCell.setValue(existing.join(","));
+    }
+  }
+
+  // Лучший streak за всё время — специально не совпадает с текущим streak: если
+  // пользователь потерял серию, уже открытые достижения не должны "сгорать".
+  const maxStreakCell = cellOf("max_streak");
+  if (maxStreakCell) {
+    const streak = computeStreak(getActiveDateSet(userId), now);
+    if (streak > (Number(maxStreakCell.getValue()) || 0)) maxStreakCell.setValue(streak);
+  }
+}
+
+// Сводная статистика для экрана "Прогресс" (система достижений, 1). Всё, что
+// можно вывести из user_words/daily_activity — считаем на лету, не храним
+// задвоенно; в users храним только то, для чего нужен порядок событий или
+// история, которую из user_words не восстановить (см. bumpAchievementCounters).
+function getStats(userId) {
+  const sh = sheet("users");
+  const row = findRowIndex(sh, "user_id", userId);
+  if (row === -1) return { error: "user not found" };
+  const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  const values = sh.getRange(row, 1, 1, headers.length).getValues()[0];
+  const get = (name, def) => {
+    const idx = headers.indexOf(name);
+    if (idx === -1) return def;
+    const v = values[idx];
+    return v === "" || v === null || v === undefined ? def : v;
+  };
+
+  const now = new Date();
+  const dateSet = getActiveDateSet(userId);
+  const streak = computeStreak(dateSet, now);
+  const maxStreak = Math.max(streak, Number(get("max_streak", 0)) || 0);
+
+  const userWords = readRows("user_words").filter((r) => String(r.user_id) === String(userId));
+  const tasksDone = userWords.reduce((s, r) => s + (Number(r.correct_count) || 0) + (Number(r.wrong_count) || 0), 0);
+  const mistakesTotal = userWords.reduce((s, r) => s + (Number(r.wrong_count) || 0), 0);
+  const wordsStarted = userWords.length;
+  const wordsMastered = userWords.filter((r) => Number(r.stage) >= 5).length;
+
+  const weekdaysActive = {};
+  Object.keys(dateSet).forEach((dateKey) => {
+    const d = new Date(dateKey + "T00:00:00Z");
+    weekdaysActive[d.getUTCDay()] = true; // 0=Вс..6=Сб
+  });
+
+  return {
+    tasksDone,
+    mistakesTotal,
+    mistakesStreakMax: Number(get("mistakes_streak_max", 0)) || 0,
+    streak,
+    maxStreak,
+    wordsStarted,
+    wordsMastered,
+    hoursActive: String(get("hours_active", "")).split(",").filter(Boolean).map(Number),
+    weekdaysActive: Object.keys(weekdaysActive).map(Number),
+    tier: get("tier", "free"),
+    level: get("level", ""),
+  };
 }
 
 function bumpXp(userId, amount) {
@@ -449,10 +740,14 @@ function getDictionary(userId, query, level) {
 
   let list = words.map((w) => {
     const uw = byWordId[w.id];
+    const rawPoints = uw ? uw.points || 0 : 0;
+    const points = uw ? effectivePoints(rawPoints, uw.last_reviewed) : 0;
     return {
       ...w,
       stage: uw ? uw.stage : 0,
-      decay: uw ? computeDecay(uw.stage, uw.last_reviewed) : 0,
+      points,
+      band: pointsBand(points),
+      decay: uw ? computeDecay(points, uw.last_reviewed) : 0,
     };
   });
 
@@ -497,7 +792,7 @@ function adminAddWord(adminUserId, word) {
   if (!isAdmin(adminUserId)) return { error: "not an admin" };
   const sh = sheet("words");
   const lastId = readWordRows().reduce((max, r) => Math.max(max, Number(r[WCOL.ID]) || 0), 0);
-  // порядок строго как в реальном листе: ID, Тема№, Тема, RU, UZ, Уровень, АудиоURL, ex1..ex5 (uz/ru пары)
+  // порядок строго как в реальном листе: ID, Тема№, Тема, RU, UZ, Уровень, АудиоURL, (ex_uz, ex_ru, ex_audio_url) x5
   const row = [
     lastId + 1,
     word.topicNumber || "",
@@ -505,9 +800,64 @@ function adminAddWord(adminUserId, word) {
     word.ru,
     word.uz,
     word.level,
-    "",
-    ...(word.examples || []).flatMap((ex) => [ex.uz, ex.ru]),
+    word.audioUrl || "",
+    ...(word.examples || []).flatMap((ex) => [ex.uz, ex.ru, ex.audioUrl || ""]),
   ];
   sh.appendRow(row);
   return { ok: true, id: lastId + 1 };
+}
+
+// ---------------------------------------------------------------------------
+// 2.2 — встроенный переводчик (свободный текст, не из нашей базы) + поиск
+// похожих по написанию слов В НАШЕЙ базе.
+// ---------------------------------------------------------------------------
+
+// Неофициальный, но широко используемый бесплатный эндпоинт Google Translate —
+// без ключа и без карты. Вызываем с бэкенда (UrlFetchApp), чтобы не упереться
+// в CORS на фронте и не светить сам URL в клиентском коде.
+function translateText(text, sourceLang, targetLang) {
+  if (!text) return { error: "empty text" };
+  const sl = sourceLang || "ru";
+  const tl = targetLang || "uz";
+  const url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=" + sl +
+    "&tl=" + tl + "&dt=t&q=" + encodeURIComponent(text);
+  try {
+    const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    const data = JSON.parse(res.getContentText());
+    const translated = data[0].map((chunk) => chunk[0]).join("");
+    return { translated, sourceLang: sl, targetLang: tl };
+  } catch (err) {
+    return { error: "translate failed: " + err };
+  }
+}
+
+// Расстояние Левенштейна — сколько правок (замена/вставка/удаление буквы)
+// отделяет одно слово от другого. Меньше = более похожи.
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const dp = [];
+  for (let i = 0; i <= m; i++) dp.push(new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+
+// Ищет ближайшие по написанию слова в НАШЕЙ базе (не в открытом интернете) —
+// полезно, когда пользователь не уверен в написании или ищет однокоренные.
+function findSimilarWords(query, limit) {
+  if (!query) return { words: [] };
+  const q = query.toLowerCase().trim();
+  const words = readWordRows().map(rowToWord);
+  const scored = words
+    .map((w) => ({ word: w, distance: levenshtein(q, w.uz.toLowerCase()) }))
+    .filter((s) => s.distance > 0)
+    .sort((a, b) => a.distance - b.distance);
+  return { words: scored.slice(0, limit).map((s) => ({ ...s.word, distance: s.distance })) };
 }
