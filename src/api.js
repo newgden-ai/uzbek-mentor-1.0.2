@@ -18,6 +18,21 @@ async function apiGet(action, params = {}) {
   return res.json();
 }
 
+// 5 — apiPost больше НЕ используется для реальных вызовов к Apps Script.
+// Веб-приложение Apps Script на .../exec отвечает 302-редиректом на
+// script.googleusercontent.com; browser fetch следует за редиректом
+// автоматически, а при этом POST-запрос по спецификации fetch превращается
+// в GET БЕЗ ТЕЛА. Из-за этого все "пишущие" действия (submitAnswer,
+// introduceWord, setUserLevel, useHint, grantAdHint, redeemPromoCode,
+// completeCheckpoint), отправленные через apiPost, долетали до бэкенда уже
+// без action и данных → бэкенд отвечал {"error":"unknown action: undefined"}.
+// Теперь ВСЕ действия (включая "пишущие") идут через apiGet — GET-редирект
+// метод сохраняет, так что параметры долетают. Backend (Code.gs) обрабатывает
+// их все в общем роутере routeRequest(), общем для doGet и doPost.
+// Функция оставлена только на случай, если она пригодится где-то ещё в
+// будущем (например, для действий с крупным payload, который не помещается
+// в query-строку) — но её нужно вызывать напрямую через XMLHttpRequest/форму,
+// а не через fetch, если понадобится реально отправлять POST на Apps Script.
 async function apiPost(body) {
   const res = await fetch(API_URL, { method: "POST", body: JSON.stringify(body) });
   return res.json();
@@ -98,7 +113,7 @@ export async function getTopicProgress({ level, topic } = {}) {
 export async function introduceWord(wordId) {
   if (!hasApi) return { ok: true };
   const user = await getCurrentUser();
-  return apiPost({ action: "introduceWord", user_id: user.user_id, word_id: wordId });
+  return apiGet("introduceWord", { user_id: user.user_id, word_id: wordId });
 }
 
 export async function getPath() {
@@ -140,7 +155,7 @@ function writePendingAnswers(list) {
 
 async function sendAnswer(entry) {
   const user = await getCurrentUser();
-  const res = await apiPost({ action: "submitAnswer", user_id: user.user_id, word_id: entry.wordId, correct: entry.correct });
+  const res = await apiGet("submitAnswer", { user_id: user.user_id, word_id: entry.wordId, correct: entry.correct });
   if (res && res.error) throw new Error(res.error);
   return res;
 }
@@ -192,7 +207,7 @@ export async function submitAnswer(wordId, correct) {
 export async function setUserLevel(level) {
   if (!hasApi) return { ok: true, level };
   const user = await getCurrentUser();
-  return apiPost({ action: "setUserLevel", user_id: user.user_id, level });
+  return apiGet("setUserLevel", { user_id: user.user_id, level });
 }
 
 // 1.1 — лимиты подсказок.
@@ -219,20 +234,20 @@ export async function getStats() {
 export async function useHint() {
   if (!hasApi) return { allowed: true, remaining: 2, excludeFromStats: false };
   const user = await getCurrentUser();
-  return apiPost({ action: "useHint", user_id: user.user_id });
+  return apiGet("useHint", { user_id: user.user_id });
 }
 
 export async function grantAdHint() {
   if (!hasApi) return { ok: true };
   const user = await getCurrentUser();
-  return apiPost({ action: "grantAdHint", user_id: user.user_id });
+  return apiGet("grantAdHint", { user_id: user.user_id });
 }
 
 // Погашение промокода на premium/tester.
 export async function redeemCode(code) {
   if (!hasApi) return { ok: true, tier: "premium" };
   const user = await getCurrentUser();
-  return apiPost({ action: "redeemPromoCode", user_id: user.user_id, code });
+  return apiGet("redeemPromoCode", { user_id: user.user_id, code });
 }
 
 // 2.2 — свободный перевод текста (не привязан к нашей базе слов).
@@ -266,7 +281,7 @@ export async function getCheckpointQueue(count = 30) {
 export async function completeCheckpoint() {
   if (!hasApi) return { ok: true };
   const user = await getCurrentUser();
-  return apiPost({ action: "completeCheckpoint", user_id: user.user_id });
+  return apiGet("completeCheckpoint", { user_id: user.user_id });
 }
 
 // ---------------------------------------------------------------------------

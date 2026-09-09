@@ -74,6 +74,10 @@ export default function ProgressScreen({ user }) {
   const [view, setView] = useState("all"); // 2 — "all" (все достижения) | "mine" (только открытые)
   const xpToNext = Math.ceil((xp + 1) / 500) * 500; // грубая прикидка следующего порога, пока нет реальной формулы уровней
   const displayName = user?.first_name || user?.username || "Ты";
+  // 6 — в профиле теперь всегда видно телеграм-логин (@username), а не только
+  // имя: раньше displayName показывал first_name ИЛИ username, поэтому логин
+  // просто нигде не отображался, если у пользователя было заполнено имя.
+  const loginHandle = user?.username ? `@${user.username}` : null;
   const level = user?.level || "—";
   const streak = user?.streak ?? 0;
   const weekActivity = Array.isArray(user?.weekActivity) ? user.weekActivity : approximateWeek(streak);
@@ -105,6 +109,9 @@ export default function ProgressScreen({ user }) {
           {tier}
         </span>
       </div>
+      {loginHandle && (
+        <p className="text-[12px] font-semibold mt-0.5" style={{ color: tokens.textSecondary }}>{loginHandle}</p>
+      )}
       <h1 className="text-3xl font-extrabold mt-1" style={{ color: tokens.textPrimary }}>Прогресс</h1>
 
       <div className="rounded-2xl px-4 py-3.5 mt-4" style={{ background: tokens.card }}>

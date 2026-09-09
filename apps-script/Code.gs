@@ -68,105 +68,109 @@ function getSpecialTrackSpreadsheet(track) {
   return SpreadsheetApp.openById(id);
 }
 
+// ---------------------------------------------------------------------------
+// 5 — ВАЖНО: doGet и doPost больше НЕ имеют раздельных списков действий.
+// Раньше "пишущие" действия (submitAnswer, introduceWord, setUserLevel,
+// useHint, grantAdHint, redeemPromoCode, completeCheckpoint) обрабатывались
+// только в doPost. Но веб-приложение Apps Script по адресу .../exec всегда
+// отвечает HTTP-редиректом (302) на настоящий адрес с содержимым
+// (script.googleusercontent.com). Браузерный fetch следует за редиректом
+// автоматически — а по спецификации fetch, если ИСХОДНЫЙ запрос был POST,
+// то после 301/302/303-редиректа повторный запрос ПРЕВРАЩАЕТСЯ В GET и ТЕЛО
+// ЗАПРОСА ОТБРАСЫВАЕТСЯ. Из-за этого POST с фронта долетал до Apps Script
+// уже как пустой GET, попадал в doGet, e.parameter.action был undefined —
+// отсюда и {"error":"unknown action: undefined"} на каждое действие,
+// отправленное через apiPost().
+//
+// Исправление: ВСЕ действия (и чтение, и запись) теперь идут через один и
+// тот же роутер routeRequest(), а фронт (см. src/api.js) отправляет их все
+// через GET с параметрами в query-строке — GET-редирект метод сохраняет.
+// doPost оставлен работать через тот же роутер (на случай прямых серверных
+// вызовов API вне браузера), но фронт им больше не пользуется.
+// ---------------------------------------------------------------------------
 function doGet(e) {
-  try {
-    const action = e.parameter.action;
-    let result;
-    switch (action) {
-      case "words":
-        result = getWords(e.parameter.level, e.parameter.topic);
-        break;
-      case "user":
-        result = getOrCreateUser(e.parameter.init_data);
-        break;
-      case "queue":
-        result = getQueue(
-          e.parameter.user_id, Number(e.parameter.count) || 10, e.parameter.mode,
-          e.parameter.topic, e.parameter.level,
-          e.parameter.offset != null ? Number(e.parameter.offset) : null,
-          e.parameter.limit != null ? Number(e.parameter.limit) : null
-        );
-        break;
-      case "dictionary":
-        result = getDictionary(e.parameter.user_id, e.parameter.query, e.parameter.level);
-        break;
-      case "learnedWords":
-        result = getLearnedWords(e.parameter.user_id);
-        break;
-      case "path":
-        result = getPath(e.parameter.user_id);
-        break;
-      case "topicProgress":
-        result = getTopicProgress(e.parameter.user_id, e.parameter.level, e.parameter.topic);
-        break;
-      case "hintStatus":
-        result = getHintStatus(e.parameter.user_id);
-        break;
-      case "stats":
-        result = getStats(e.parameter.user_id);
-        break;
-      case "translate":
-        result = translateText(e.parameter.text, e.parameter.sl, e.parameter.tl);
-        break;
-      case "similarWords":
-        result = findSimilarWords(e.parameter.query, Number(e.parameter.limit) || 8);
-        break;
-      case "checkpointStatus":
-        result = getCheckpointStatus(e.parameter.user_id);
-        break;
-      case "checkpointQueue":
-        result = getCheckpointQueue(e.parameter.user_id, Number(e.parameter.count) || 30);
-        break;
-      case "specialTrack":
-        result = getSpecialTrack(e.parameter.track);
-        break;
-      case "specialTrackQueue":
-        result = getSpecialTrackQueue(e.parameter.track, e.parameter.subLevel);
-        break;
-      default:
-        result = { error: "unknown action: " + action };
-    }
-    return jsonOutput(result);
-  } catch (err) {
-    return jsonOutput({ error: String(err) });
-  }
+  return jsonOutput(routeRequest(e.parameter.action, e.parameter));
 }
 
 function doPost(e) {
+  let body = {};
   try {
-    const body = JSON.parse(e.postData.contents);
-    let result;
-    switch (body.action) {
-      case "submitAnswer":
-        result = submitAnswer(body.user_id, body.word_id, body.correct);
-        break;
-      case "introduceWord":
-        result = introduceWord(body.user_id, body.word_id);
-        break;
-      case "adminAddWord":
-        result = adminAddWord(body.admin_user_id, body.word);
-        break;
-      case "setUserLevel":
-        result = setUserLevel(body.user_id, body.level);
-        break;
-      case "useHint":
-        result = useHint(body.user_id);
-        break;
-      case "grantAdHint":
-        result = grantAdHint(body.user_id);
-        break;
-      case "redeemPromoCode":
-        result = redeemPromoCode(body.user_id, body.code);
-        break;
-      case "completeCheckpoint":
-        result = completeCheckpoint(body.user_id);
-        break;
-      default:
-        result = { error: "unknown action: " + body.action };
-    }
-    return jsonOutput(result);
+    if (e.postData && e.postData.contents) body = JSON.parse(e.postData.contents);
   } catch (err) {
-    return jsonOutput({ error: String(err) });
+    body = {};
+  }
+  // e.parameter тоже может содержать action/данные, если запрос отправили как
+  // POST на URL с query-параметрами — на всякий случай объединяем оба источника,
+  // тело (body) в приоритете.
+  const params = Object.assign({}, e.parameter, body);
+  const action = body.action || (e.parameter && e.parameter.action);
+  return jsonOutput(routeRequest(action, params));
+}
+
+function toBool(v) {
+  return v === true || v === "true" || v === "1" || v === 1;
+}
+
+function routeRequest(action, p) {
+  p = p || {};
+  try {
+    switch (action) {
+      case "words":
+        return getWords(p.level, p.topic);
+      case "user":
+        return getOrCreateUser(p.init_data);
+      case "queue":
+        return getQueue(
+          p.user_id, Number(p.count) || 10, p.mode,
+          p.topic, p.level,
+          p.offset != null && p.offset !== "" ? Number(p.offset) : null,
+          p.limit != null && p.limit !== "" ? Number(p.limit) : null
+        );
+      case "dictionary":
+        return getDictionary(p.user_id, p.query, p.level);
+      case "learnedWords":
+        return getLearnedWords(p.user_id);
+      case "path":
+        return getPath(p.user_id);
+      case "topicProgress":
+        return getTopicProgress(p.user_id, p.level, p.topic);
+      case "hintStatus":
+        return getHintStatus(p.user_id);
+      case "stats":
+        return getStats(p.user_id);
+      case "translate":
+        return translateText(p.text, p.sl, p.tl);
+      case "similarWords":
+        return findSimilarWords(p.query, Number(p.limit) || 8);
+      case "checkpointStatus":
+        return getCheckpointStatus(p.user_id);
+      case "checkpointQueue":
+        return getCheckpointQueue(p.user_id, Number(p.count) || 30);
+      case "specialTrack":
+        return getSpecialTrack(p.track);
+      case "specialTrackQueue":
+        return getSpecialTrackQueue(p.track, p.subLevel);
+      case "submitAnswer":
+        return submitAnswer(p.user_id, p.word_id, toBool(p.correct));
+      case "introduceWord":
+        return introduceWord(p.user_id, p.word_id);
+      case "adminAddWord":
+        return adminAddWord(p.admin_user_id, typeof p.word === "string" ? JSON.parse(p.word) : p.word);
+      case "setUserLevel":
+        return setUserLevel(p.user_id, p.level);
+      case "useHint":
+        return useHint(p.user_id);
+      case "grantAdHint":
+        return grantAdHint(p.user_id);
+      case "redeemPromoCode":
+        return redeemPromoCode(p.user_id, p.code);
+      case "completeCheckpoint":
+        return completeCheckpoint(p.user_id);
+      default:
+        return { error: "unknown action: " + action };
+    }
+  } catch (err) {
+    return { error: String(err) };
   }
 }
 
@@ -200,11 +204,24 @@ function parseInitData(initData) {
   return result;
 }
 
+// 6 — verifyTelegramInitData теперь возвращает не просто null при любой
+// проблеме, а объект { user, error } — раньше любая причина сбоя (не задан
+// BOT_TOKEN, initData не пришёл с фронта, initData просрочен, подпись не
+// совпала) схлопывалась в один и тот же "invalid init data", и разобраться,
+// что именно сломано в конкретном деплое, было невозможно без залезания в код.
+const INIT_DATA_MAX_AGE_SECONDS = 24 * 60 * 60; // 24 часа — типовая рекомендация Telegram против replay-атак
+
 function verifyTelegramInitData(initData) {
-  if (!initData) return null;
+  if (!BOT_TOKEN) {
+    return { user: null, error: "BOT_TOKEN не задан в свойствах скрипта (Настройки проекта → Свойства скрипта)" };
+  }
+  if (!initData) {
+    return { user: null, error: "initData не передан с фронта (открой мини-апп через Telegram, а не напрямую в браузере)" };
+  }
+
   const params = parseInitData(initData);
   const hash = params.hash;
-  if (!hash) return null;
+  if (!hash) return { user: null, error: "в initData нет hash — похоже на обрезанные/повреждённые данные" };
 
   const pairs = Object.keys(params)
     .filter((k) => k !== "hash")
@@ -213,12 +230,31 @@ function verifyTelegramInitData(initData) {
   const dataCheckString = pairs.join("\n");
 
   const secretKey = Utilities.computeHmacSha256Signature(BOT_TOKEN, "WebAppData");
-  const computedHash = Utilities.computeHmacSha256Signature(dataCheckString, secretKey)
+  // У Utilities.computeHmacSha256Signature в Apps Script нет перегрузки
+  // (String, Byte[]) — только (String, String) или (Byte[], Byte[]). secretKey
+  // тут уже байты (результат первого вызова), поэтому dataCheckString тоже
+  // нужно явно превратить в байты, иначе рантайм кидает "не соответствуют
+  // сигнатуре метода".
+  const dataCheckBytes = Utilities.newBlob(dataCheckString).getBytes();
+  const computedHash = Utilities.computeHmacSha256Signature(dataCheckBytes, secretKey)
     .map((b) => (b < 0 ? b + 256 : b).toString(16).padStart(2, "0"))
     .join("");
 
-  if (computedHash !== hash) return null;
-  return JSON.parse(params.user);
+  if (computedHash !== hash) {
+    return { user: null, error: "подпись initData не совпала — проверь, что BOT_TOKEN в свойствах скрипта совпадает с токеном именно того бота, под которым открыт мини-апп" };
+  }
+
+  const authDate = Number(params.auth_date) || 0;
+  const ageSeconds = Math.floor(Date.now() / 1000) - authDate;
+  if (authDate && ageSeconds > INIT_DATA_MAX_AGE_SECONDS) {
+    return { user: null, error: "initData устарел (сессия слишком старая) — перезайди в мини-апп" };
+  }
+
+  try {
+    return { user: JSON.parse(params.user), error: null };
+  } catch (err) {
+    return { user: null, error: "не удалось разобрать поле user из initData: " + err };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -379,8 +415,9 @@ function getTopicProgress(userId, level, topic) {
 // users
 // ---------------------------------------------------------------------------
 function getOrCreateUser(initData) {
-  const tgUser = verifyTelegramInitData(initData);
-  if (!tgUser) return { error: "invalid init data" };
+  const verified = verifyTelegramInitData(initData);
+  if (!verified.user) return { error: verified.error || "invalid init data" };
+  const tgUser = verified.user;
 
   const sh = sheet("users");
   const row = findRowIndex(sh, "user_id", tgUser.id);
@@ -391,7 +428,8 @@ function getOrCreateUser(initData) {
     sh.appendRow([tgUser.id, tgUser.username || "", tgUser.first_name || "", "", 0, 0, nowIso, nowIso]);
     return {
       user_id: tgUser.id,
-      username: tgUser.username,
+      username: tgUser.username || "",
+      first_name: tgUser.first_name || "",
       level: "",
       xp: 0,
       streak: 0,
@@ -402,6 +440,17 @@ function getOrCreateUser(initData) {
   const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
   const values = sh.getRange(row, 1, 1, headers.length).getValues()[0];
   sh.getRange(row, headers.indexOf("last_active") + 1).setValue(nowIso);
+
+  // 6 — раньше username/first_name писались в таблицу ТОЛЬКО при первом
+  // создании строки и больше никогда не обновлялись. Если человек сменил
+  // логин/имя в Telegram (или в момент первого захода username вообще не был
+  // задан), в приложении навсегда оставались устаревшие/пустые данные, и в
+  // профиле мог отображаться не тот логин. Теперь синхронизируем их с
+  // актуальными данными из initData на каждый заход.
+  const usernameCol = headers.indexOf("username") + 1;
+  const firstNameCol = headers.indexOf("first_name") + 1;
+  if (usernameCol > 0) sh.getRange(row, usernameCol).setValue(tgUser.username || "");
+  if (firstNameCol > 0) sh.getRange(row, firstNameCol).setValue(tgUser.first_name || "");
 
   // 3 — пересчитываем streak из реального дневного лога вместо хранимого
   // значения (оно раньше нигде не обновлялось) и синхронизируем users.streak,
@@ -414,6 +463,8 @@ function getOrCreateUser(initData) {
 
   const obj = {};
   headers.forEach((h, i) => (obj[h] = values[i]));
+  obj.username = tgUser.username || "";
+  obj.first_name = tgUser.first_name || "";
   obj.streak = streak;
   obj.weekActivity = weekActivity;
   return obj;
