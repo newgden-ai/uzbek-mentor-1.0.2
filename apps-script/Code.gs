@@ -55,6 +55,19 @@ function getSpreadsheet() {
   return SpreadsheetApp.openById(id);
 }
 
+// 8 — «История Узбекистана» и «Законодательство РУз» специально ведутся в
+// ОТДЕЛЬНЫХ от основной таблицы файлах (свой Google-документ на каждый курс,
+// не лист в общей таблице со словами) — так их может наполнять/редактировать
+// кто-то другой, не трогая словарь вообще. ID каждого файла — в своих
+// свойствах скрипта: HISTORY_SPREADSHEET_ID и LAW_SPREADSHEET_ID.
+function getSpecialTrackSpreadsheet(track) {
+  const propName = track === "history" ? "HISTORY_SPREADSHEET_ID" : track === "law" ? "LAW_SPREADSHEET_ID" : null;
+  if (!propName) return null;
+  const id = PropertiesService.getScriptProperties().getProperty(propName);
+  if (!id) return null; // не настроено — специально не кидаем ошибку, фронт покажет "материалы скоро появятся"
+  return SpreadsheetApp.openById(id);
+}
+
 function doGet(e) {
   try {
     const action = e.parameter.action;
@@ -67,13 +80,24 @@ function doGet(e) {
         result = getOrCreateUser(e.parameter.init_data);
         break;
       case "queue":
-        result = getQueue(e.parameter.user_id, Number(e.parameter.count) || 10, e.parameter.mode);
+        result = getQueue(
+          e.parameter.user_id, Number(e.parameter.count) || 10, e.parameter.mode,
+          e.parameter.topic, e.parameter.level,
+          e.parameter.offset != null ? Number(e.parameter.offset) : null,
+          e.parameter.limit != null ? Number(e.parameter.limit) : null
+        );
         break;
       case "dictionary":
         result = getDictionary(e.parameter.user_id, e.parameter.query, e.parameter.level);
         break;
+      case "learnedWords":
+        result = getLearnedWords(e.parameter.user_id);
+        break;
       case "path":
         result = getPath(e.parameter.user_id);
+        break;
+      case "topicProgress":
+        result = getTopicProgress(e.parameter.user_id, e.parameter.level, e.parameter.topic);
         break;
       case "hintStatus":
         result = getHintStatus(e.parameter.user_id);
@@ -86,6 +110,18 @@ function doGet(e) {
         break;
       case "similarWords":
         result = findSimilarWords(e.parameter.query, Number(e.parameter.limit) || 8);
+        break;
+      case "checkpointStatus":
+        result = getCheckpointStatus(e.parameter.user_id);
+        break;
+      case "checkpointQueue":
+        result = getCheckpointQueue(e.parameter.user_id, Number(e.parameter.count) || 30);
+        break;
+      case "specialTrack":
+        result = getSpecialTrack(e.parameter.track);
+        break;
+      case "specialTrackQueue":
+        result = getSpecialTrackQueue(e.parameter.track, e.parameter.subLevel);
         break;
       default:
         result = { error: "unknown action: " + action };
@@ -122,6 +158,9 @@ function doPost(e) {
       case "redeemPromoCode":
         result = redeemPromoCode(body.user_id, body.code);
         break;
+      case "completeCheckpoint":
+        result = completeCheckpoint(body.user_id);
+        break;
       default:
         result = { error: "unknown action: " + body.action };
     }
@@ -139,15 +178,38 @@ function jsonOutput(obj) {
 
 // ---------------------------------------------------------------------------
 // Telegram auth — проверяем подпись initData, чтобы не доверять user_id из query как есть
+//
+// 4 — НАЙДЕНА ВЕРОЯТНАЯ КОРНЕВАЯ ПРИЧИНА, почему авторизация/синхронизация не
+// работала вообще: тут стоял `new URLSearchParams(initData)`, а URLSearchParams
+// — это Web API браузера/Node, его НЕТ в рантайме Google Apps Script (V8 без
+// браузерных API). Вызов кидал ReferenceError на каждый запрос → verify всегда
+// падал → getOrCreateUser всегда возвращал ошибку → у пользователя никогда не
+// было настоящего личного user_id → ничего не синхронизировалось. Заменил на
+// ручной парсер без внешних API.
 // ---------------------------------------------------------------------------
+function parseInitData(initData) {
+  const result = {};
+  initData.split("&").forEach((pair) => {
+    if (!pair) return;
+    const idx = pair.indexOf("=");
+    if (idx === -1) return;
+    const key = decodeURIComponent(pair.slice(0, idx));
+    const value = decodeURIComponent(pair.slice(idx + 1).replace(/\+/g, " "));
+    result[key] = value;
+  });
+  return result;
+}
+
 function verifyTelegramInitData(initData) {
   if (!initData) return null;
-  const params = new URLSearchParams(initData);
-  const hash = params.get("hash");
-  params.delete("hash");
-  const pairs = [];
-  params.forEach((v, k) => pairs.push(`${k}=${v}`));
-  pairs.sort();
+  const params = parseInitData(initData);
+  const hash = params.hash;
+  if (!hash) return null;
+
+  const pairs = Object.keys(params)
+    .filter((k) => k !== "hash")
+    .map((k) => `${k}=${params[k]}`)
+    .sort();
   const dataCheckString = pairs.join("\n");
 
   const secretKey = Utilities.computeHmacSha256Signature(BOT_TOKEN, "WebAppData");
@@ -156,7 +218,7 @@ function verifyTelegramInitData(initData) {
     .join("");
 
   if (computedHash !== hash) return null;
-  return JSON.parse(params.get("user"));
+  return JSON.parse(params.user);
 }
 
 // ---------------------------------------------------------------------------
@@ -167,7 +229,13 @@ function sheet(name) {
 }
 
 function readRows(name) {
-  const sh = sheet(name);
+  return readRowsFromSheetObject(sheet(name));
+}
+
+// Тот же разбор строк, но для листа, который уже открыт (в том числе из
+// ДРУГОГО файла — используется для истории/законодательства, см. 8).
+function readRowsFromSheetObject(sh) {
+  if (!sh) return [];
   const values = sh.getDataRange().getValues();
   const headers = values.shift();
   return values.map((row) => {
@@ -200,11 +268,71 @@ const WCOL_EX_UZ = [7, 10, 13, 16, 19];
 const WCOL_EX_RU = [8, 11, 14, 17, 20];
 const WCOL_EX_AUDIO = [9, 12, 15, 18, 21];
 
+// 1.4 — "База" зависала: readWordRows() читал ВЕСЬ лист words (8781 строк x
+// 22 колонки) через getDataRange().getValues() на КАЖДЫЙ запрос — words,
+// dictionary (на каждую букву поиска), path, queue и т.д. Это самый тяжёлый
+// вызов в скрипте. Кешируем результат через CacheService: сам лист words
+// меняется редко (только adminAddWord), а не на каждый чих пользователя.
+// CacheService хранит значения максимум 100КБ на ключ, поэтому режем на
+// куски. TTL 6 часов — на случай, если кто-то поправил таблицу руками, а
+// invalidateWordsCache() (вызывается из adminAddWord) сбрасывает сразу.
+const WORDS_CACHE_PREFIX = "words_v1_chunk_";
+const WORDS_CACHE_META = "words_v1_meta";
+const WORDS_CACHE_TTL = 21600; // 6 часов
+const WORDS_CACHE_CHUNK_SIZE = 200; // строк на чанк — с запасом под лимит 100КБ/ключ
+
 function readWordRows() {
+  const cache = CacheService.getScriptCache();
+  const meta = cache.get(WORDS_CACHE_META);
+  if (meta) {
+    try {
+      const chunkCount = Number(meta);
+      const keys = [];
+      for (let i = 0; i < chunkCount; i++) keys.push(WORDS_CACHE_PREFIX + i);
+      const chunks = cache.getAll(keys);
+      if (Object.keys(chunks).length === chunkCount) {
+        let rows = [];
+        for (let i = 0; i < chunkCount; i++) {
+          rows = rows.concat(JSON.parse(chunks[WORDS_CACHE_PREFIX + i]));
+        }
+        return rows;
+      }
+    } catch (err) {
+      // повреждённый/неполный кеш — просто перечитываем из таблицы ниже
+    }
+  }
+
   const sh = sheet("words");
   const values = sh.getDataRange().getValues();
   values.shift(); // заголовок
+
+  try {
+    const chunkCount = Math.ceil(values.length / WORDS_CACHE_CHUNK_SIZE) || 0;
+    const payload = {};
+    for (let i = 0; i < chunkCount; i++) {
+      const chunk = values.slice(i * WORDS_CACHE_CHUNK_SIZE, (i + 1) * WORDS_CACHE_CHUNK_SIZE);
+      payload[WORDS_CACHE_PREFIX + i] = JSON.stringify(chunk);
+    }
+    cache.putAll(payload, WORDS_CACHE_TTL);
+    cache.put(WORDS_CACHE_META, String(chunkCount), WORDS_CACHE_TTL);
+  } catch (err) {
+    // если таблица слишком большая даже для кеша — не страшно, просто не
+    // закешируется и будем читать напрямую каждый раз, как раньше.
+  }
+
   return values;
+}
+
+// Вызывается после adminAddWord — новое слово иначе не появится, пока не
+// истекут 6 часов TTL.
+function invalidateWordsCache() {
+  const cache = CacheService.getScriptCache();
+  const meta = cache.get(WORDS_CACHE_META);
+  if (!meta) return;
+  const chunkCount = Number(meta);
+  const keys = [WORDS_CACHE_META];
+  for (let i = 0; i < chunkCount; i++) keys.push(WORDS_CACHE_PREFIX + i);
+  cache.removeAll(keys);
 }
 
 function rowToWord(row) {
@@ -229,6 +357,22 @@ function getWords(level, topic) {
   if (level) rows = rows.filter((r) => r[WCOL.LEVEL] === level);
   if (topic) rows = rows.filter((r) => r[WCOL.TOPIC] === topic);
   return rows.map(rowToWord);
+}
+
+// 7 — реальный прогресс по подтемам (Часть 1/2/3…) внутри темы, вместо
+// демо-заглушки, которая делила подтемы пополам просто по статусу темы.
+// Отдаём points каждого слова темы в ТОМ ЖЕ порядке, что и getWords/getQueue,
+// чтобы фронт мог нарезать их на те же куски по CHUNK_SIZE и посчитать,
+// какая часть реально пройдена (все слова в ней достроены, points >= 5).
+function getTopicProgress(userId, level, topic) {
+  let words = readWordRows().map(rowToWord);
+  if (level) words = words.filter((w) => w.level === level);
+  if (topic) words = words.filter((w) => w.topic === topic);
+  const userWords = readRows("user_words").filter((r) => String(r.user_id) === String(userId));
+  const byId = {};
+  userWords.forEach((r) => (byId[r.word_id] = r));
+  const points = words.map((w) => (byId[w.id] ? byId[w.id].points || 0 : 0));
+  return { points };
 }
 
 // ---------------------------------------------------------------------------
@@ -384,10 +528,25 @@ function computeDecay(points, lastReviewed) {
 // потом изучение новых (до ACTIVE_POOL_SIZE одновременно "в работе"),
 // потом практика уже показанных, но ещё не отточенных (points 1-4).
 // mode: "all" (по умолчанию) | "new" (только изучение) | "review" (только повтор)
+//
+// 3.1/7 — topic/level/offset/limit: раньше открытие темы из "Пути" шло через
+// getWords() и ВСЕГДА принудительно ставило mode:"exercise" — то есть даже
+// совсем новые, ни разу не показанные слова сразу превращались в задания без
+// карточки "узнай слово". Плюс "части" темы (Часть 1/2/3) были чисто
+// декоративными — под капотом всегда грузилась вся тема целиком. Теперь тема
+// (и конкретный её кусок через offset/limit) идёт через ту же самую SRS-
+// логику (due → learn → practice), что и обычная сессия, просто в границах
+// этой темы/части — так "часть" реально ограничивает набор слов, а новые
+// слова действительно сначала показываются, а не сразу спрашиваются.
 // ---------------------------------------------------------------------------
-function getQueue(userId, count, mode) {
+function getQueue(userId, count, mode, topic, level, offset, limit) {
   mode = mode || "all";
-  const words = readWordRows().map(rowToWord); // порядок как в листе (по темам/уровням)
+  let words = readWordRows().map(rowToWord); // порядок как в листе (по темам/уровням)
+  if (topic) words = words.filter((w) => w.topic === topic);
+  if (level) words = words.filter((w) => w.level === level);
+  const isScoped = Boolean(topic); // тема/часть — работаем со всем этим набором, а не только с ACTIVE_POOL_SIZE
+  if (offset != null && limit != null) words = words.slice(offset, offset + limit);
+
   const userWords = readRows("user_words").filter((r) => String(r.user_id) === String(userId));
   const byWordId = {};
   userWords.forEach((r) => (byWordId[r.word_id] = r));
@@ -399,13 +558,15 @@ function getQueue(userId, count, mode) {
 
   // Активный пул: первые ACTIVE_POOL_SIZE слов (в порядке листа) с points < 5 —
   // как только слово "достроено" (points >= 5), место освобождается следующему.
+  // Если сессия ограничена конкретной темой/частью — пул это ВСЕ слова темы,
+  // а не только первые ACTIVE_POOL_SIZE из всей базы.
   const activePool = [];
   for (const w of words) {
     const uw = byWordId[w.id];
     const points = uw ? uw.points || 0 : 0;
     if (points < 5) {
       activePool.push(w);
-      if (activePool.length >= ACTIVE_POOL_SIZE) break;
+      if (!isScoped && activePool.length >= ACTIVE_POOL_SIZE) break;
     }
   }
   const learnWords = activePool.filter((w) => !byWordId[w.id] || !byWordId[w.id].introduced);
@@ -433,7 +594,7 @@ function getQueue(userId, count, mode) {
     ];
   }
 
-  return { queue: items.slice(0, count) };
+  return { queue: isScoped ? items : items.slice(0, count) };
 }
 
 // Отмечает слово как "показанное" на карточке изучения (1.6) — баллы не меняются,
@@ -618,9 +779,26 @@ function setUserLevel(userId, level) {
 // 1.1 — лимиты подсказок (тарифы + выходные + тестер + реклама)
 // ---------------------------------------------------------------------------
 
+// 3.2/9 — самозащита от рассинхронизации таблицы: если после обновления кода
+// кто-то забыл заново запустить setupSheets(), нужных колонок в users может
+// не быть, и headers.indexOf(...) вернёт -1 → getRange(row, 0) кидает ошибку
+// → фича молча "не реагирует" (это была вероятная причина, почему подсказка
+// не отвечала). ensureColumns дописывает недостающие колонки на лету, вместо
+// того чтобы падать.
+function ensureColumns(sh, names) {
+  const lastCol = sh.getLastColumn();
+  const headers = lastCol > 0 ? sh.getRange(1, 1, 1, lastCol).getValues()[0] : [];
+  const missing = names.filter((n) => headers.indexOf(n) === -1);
+  if (missing.length > 0) {
+    sh.getRange(1, headers.length + 1, 1, missing.length).setValues([missing]);
+  }
+  return sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+}
+
 // Если hints_reset_date не сегодня — обнуляем счётчик (новый день, новый лимит).
 // Возвращает {row, headers, tier, used, limit} после при необходимости сброса.
 function ensureHintDay(sh, row, headers) {
+  headers = ensureColumns(sh, ["hints_reset_date", "hints_used_today", "tier"]);
   const now = new Date();
   const resetCol = headers.indexOf("hints_reset_date") + 1;
   const usedCol = headers.indexOf("hints_used_today") + 1;
@@ -753,11 +931,40 @@ function getDictionary(userId, query, level) {
 
   if (query) {
     const q = query.toLowerCase();
-    list = list.filter((w) => w.ru.toLowerCase().includes(q) || w.uz.toLowerCase().includes(q));
+    const exact = list.filter((w) => w.ru.toLowerCase().includes(q) || w.uz.toLowerCase().includes(q));
+    if (exact.length > 0) {
+      list = exact;
+    } else {
+      // 1.1 — точных совпадений нет: показываем похожие по написанию узбекские
+      // слова (опечатка/неточный ввод), а не пустой список "ничего не найдено".
+      const scored = list
+        .map((w) => ({ w, d: levenshtein(q, w.uz.toLowerCase()) }))
+        .filter((s) => s.d <= 3)
+        .sort((a, b) => a.d - b.d);
+      list = scored.slice(0, 20).map((s) => s.w);
+    }
   } else {
     // без запроса не отдаём всю базу разом — только первые 50 для начального просмотра
     list = list.slice(0, 50);
   }
+  return { words: list };
+}
+
+// 6 — игра "Найди слова" использовала getDictionary({}) без query, а та без
+// query всегда отдаёт одни и те же ПЕРВЫЕ 50 слов листа (см. комментарий выше:
+// это сделано специально, чтобы не гонять всю базу на пустой поиск). Из-за
+// этого игра "видела" только слова из этого фиксированного окна и часто не
+// находила реально изученные пользователем слова, если он ушёл в изучении
+// дальше первых 50 строк листа. Отдельный эндпоинт без 50-кап, фильтрует по
+// реальным баллам пользователя (points > 0) по ВСЕЙ базе.
+function getLearnedWords(userId) {
+  const words = readWordRows().map(rowToWord);
+  const userWords = readRows("user_words").filter((r) => String(r.user_id) === String(userId) && (r.points || 0) > 0);
+  const byWordId = {};
+  userWords.forEach((r) => (byWordId[r.word_id] = r));
+  const list = words
+    .filter((w) => byWordId[w.id])
+    .map((w) => ({ ...w, points: byWordId[w.id].points || 0, stage: byWordId[w.id].stage || 0 }));
   return { words: list };
 }
 
@@ -779,6 +986,125 @@ function getPath(userId) {
 
   return { topics: Object.values(topics) };
 }
+
+// ---------------------------------------------------------------------------
+// 9 — контрольная проверка каждые 500 изученных слов. "Изучено" здесь = слово
+// показано (introduced=true в user_words), не обязательно доучено до конца —
+// проверка как раз и должна закреплять пройденное. users.checkpoint_at
+// хранит порог (кратный 500), на котором пользователь последний раз прошёл
+// проверку; due = true, когда introduced-слов накопилось на следующий порог.
+// ---------------------------------------------------------------------------
+const CHECKPOINT_STEP = 500;
+const CHECKPOINT_QUESTIONS = 30;
+
+function countIntroducedWords(userId) {
+  const userWords = readRows("user_words").filter((r) => String(r.user_id) === String(userId));
+  return userWords.filter((r) => r.introduced === true || r.introduced === "TRUE" || Number(r.points) > 0).length;
+}
+
+function getCheckpointStatus(userId) {
+  const sh = sheet("users");
+  const row = findRowIndex(sh, "user_id", userId);
+  if (row === -1) return { error: "user not found" };
+  const headers = ensureColumns(sh, ["checkpoint_at"]);
+  const cpCol = headers.indexOf("checkpoint_at");
+  const checkpointAt = cpCol === -1 ? 0 : Number(sh.getRange(row, cpCol + 1).getValue()) || 0;
+
+  const introduced = countIntroducedWords(userId);
+  const nextAt = checkpointAt + CHECKPOINT_STEP;
+  return {
+    due: introduced >= nextAt,
+    wordsIntroduced: introduced,
+    checkpointAt,
+    nextAt,
+  };
+}
+
+// 30 случайных заданий из ВСЕГО пройденного языкового материала (введённые
+// слова пользователя), не только из последних 500 — так и просили: после
+// каждых следующих 500 проверка снова идёт по всему накопленному материалу.
+function getCheckpointQueue(userId, count) {
+  count = count || CHECKPOINT_QUESTIONS;
+  const words = readWordRows().map(rowToWord);
+  const byId = {};
+  words.forEach((w) => (byId[w.id] = w));
+
+  const userWords = readRows("user_words").filter(
+    (r) => String(r.user_id) === String(userId) && (r.introduced === true || r.introduced === "TRUE" || Number(r.points) > 0)
+  );
+  const pool = userWords.map((r) => byId[String(r.word_id)]).filter(Boolean);
+  const shuffled = [...pool].sort(() => Math.random() - 0.5).slice(0, count);
+  const items = shuffled.map((w) => ({
+    wordId: w.id, ru: w.ru, uz: w.uz, topic: w.topic, audioUrl: w.audioUrl,
+    examples: w.examples, mode: "exercise",
+  }));
+  return { queue: items };
+}
+
+function completeCheckpoint(userId) {
+  const sh = sheet("users");
+  const row = findRowIndex(sh, "user_id", userId);
+  if (row === -1) return { error: "user not found" };
+  const headers = ensureColumns(sh, ["checkpoint_at"]);
+  const cpCol = headers.indexOf("checkpoint_at");
+  if (cpCol === -1) return { error: "checkpoint_at column missing" };
+
+  const introduced = countIntroducedWords(userId);
+  // Фиксируем порог, до которого реально дошли (округление вниз до шага 500),
+  // а не просто +500 — если пользователь долго не открывал проверку и успел
+  // выучить 1200 слов, следующая проверка не откроется через 500 сразу же.
+  const newCheckpoint = Math.floor(introduced / CHECKPOINT_STEP) * CHECKPOINT_STEP;
+  sh.getRange(row, cpCol + 1).setValue(newCheckpoint);
+  return { ok: true, checkpointAt: newCheckpoint };
+}
+
+// ---------------------------------------------------------------------------
+// 8 — «История Узбекистана» и «Законодательство РУз»: отдельные спецкурсы,
+// каждый со своими подуровнями. По просьбе — контент ведётся в ДВУХ ОТДЕЛЬНЫХ
+// Google-таблицах (не в листах основной таблицы со словами), см.
+// getSpecialTrackSpreadsheet выше. В каждом файле нужен лист "content" с
+// колонками: id, subLevel, subLevelLabel, question, correct, wrong1, wrong2, wrong3.
+// Если файл не подключён (нет ID в свойствах скрипта) или лист "content" пуст —
+// отдаём пустой список подуровней, фронт покажет "материалы скоро появятся"
+// вместо выдуманных фактов об истории/законах (это осознанно).
+// ---------------------------------------------------------------------------
+const SPECIAL_TRACK_SHEET_NAME = "content";
+
+function getSpecialTrackRows(track) {
+  const ss = getSpecialTrackSpreadsheet(track);
+  if (!ss) return [];
+  const sh = ss.getSheetByName(SPECIAL_TRACK_SHEET_NAME);
+  return readRowsFromSheetObject(sh);
+}
+
+function getSpecialTrack(track) {
+  const rows = getSpecialTrackRows(track);
+  const bySub = {};
+  rows.forEach((r) => {
+    const key = String(r.subLevel || "1");
+    if (!bySub[key]) bySub[key] = { subLevel: key, label: r.subLevelLabel || `Часть ${key}`, count: 0 };
+    bySub[key].count++;
+  });
+  return { subLevels: Object.values(bySub) };
+}
+
+function getSpecialTrackQueue(track, subLevel) {
+  const rows = getSpecialTrackRows(track).filter((r) => String(r.subLevel || "1") === String(subLevel));
+  const items = rows.map((r) => ({
+    id: r.id,
+    type: "choice",
+    prompt: track === "history" ? "История Узбекистана" : "Законодательство РУз",
+    source: r.question,
+    options: [
+      { text: r.correct, correct: true },
+      { text: r.wrong1, correct: false },
+      { text: r.wrong2, correct: false },
+      { text: r.wrong3, correct: false },
+    ].filter((o) => o.text),
+  }));
+  return { queue: sample(items) };
+}
+function sample(arr) { return [...arr].sort(() => Math.random() - 0.5); }
 
 // ---------------------------------------------------------------------------
 // admin
@@ -804,6 +1130,7 @@ function adminAddWord(adminUserId, word) {
     ...(word.examples || []).flatMap((ex) => [ex.uz, ex.ru, ex.audioUrl || ""]),
   ];
   sh.appendRow(row);
+  invalidateWordsCache();
   return { ok: true, id: lastId + 1 };
 }
 

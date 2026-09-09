@@ -22,11 +22,14 @@ import { buildQueueFromWords } from "../data/exerciseBuilder.js";
 import {
   getQueue as apiGetQueue,
   getWords as apiGetWords,
+  getTopicProgress,
   getHintStatus,
   useHint as apiUseHint,
   grantAdHint,
   submitAnswer,
   introduceWord,
+  getCheckpointQueue,
+  completeCheckpoint,
 } from "../api.js";
 
 const HELPERS_DELAY_MS = 4000;
@@ -548,8 +551,8 @@ function TranslateToUz({ ex, onDone, hintBudget, onRequestHint, onWatchAd, adBus
         <input
           value={value}
           onChange={(e) => { if (checked) return; setValue(e.target.value); setDiff(null); }}
-          placeholder="Напиши перевод на узбекском..."
-          className="w-full mt-8 rounded-2xl px-4 py-3.5 text-[15px] font-semibold outline-none"
+          placeholder={ex.placeholder || "Напиши перевод на узбекском..."}
+          className="w-full mt-8 rounded-2xl px-4 py-3.5 text-[16px] font-semibold outline-none"
           style={{ background: tokens.card, color: tokens.textPrimary, border: `2px solid ${diff ? tokens.wrong + "70" : "transparent"}` }}
         />
         {diff && (
@@ -582,7 +585,7 @@ function TranslateToUz({ ex, onDone, hintBudget, onRequestHint, onWatchAd, adBus
   );
 }
 
-const RENDERERS = { assembly: Assembly, choice: Choice, fillBlank: FillBlank, translateToUz: TranslateToUz, spell: Spell, learn: LearnCard };
+const RENDERERS = { assembly: Assembly, choice: Choice, fillBlank: FillBlank, translateToUz: TranslateToUz, translateToRu: TranslateToUz, spell: Spell, learn: LearnCard };
 
 function PlacementResult({ score, total, level, onFinish }) {
   return (
@@ -593,6 +596,24 @@ function PlacementResult({ score, total, level, onFinish }) {
       <h1 className="text-2xl font-extrabold" style={{ color: tokens.textPrimary }}>Проверка пройдена</h1>
       <p className="text-[14px] mt-2" style={{ color: tokens.textSecondary }}>
         {score} из {total} верно — уровень {level} подтверждён, приложение подстроится под него
+      </p>
+      <button onClick={onFinish} className="mt-6 rounded-full px-8 py-3.5 font-bold text-[15px]" style={{ background: tokens.accentGradient, color: "#FBF9F4" }}>
+        В приложение
+      </button>
+    </div>
+  );
+}
+
+// 9 — итог контрольной проверки каждые 500 слов.
+function CheckpointResult({ score, total, onFinish }) {
+  return (
+    <div className="flex-1 flex flex-col items-center justify-center px-8 text-center">
+      <div className="w-16 h-16 rounded-full flex items-center justify-center mb-4" style={{ background: tokens.accentGradient }}>
+        <Trophy size={28} color="#FBF9F4" />
+      </div>
+      <h1 className="text-2xl font-extrabold" style={{ color: tokens.textPrimary }}>Проверка пройдена</h1>
+      <p className="text-[14px] mt-2" style={{ color: tokens.textSecondary }}>
+        {score} из {total} верно — материал закреплён, продолжай заниматься
       </p>
       <button onClick={onFinish} className="mt-6 rounded-full px-8 py-3.5 font-bold text-[15px]" style={{ background: tokens.accentGradient, color: "#FBF9F4" }}>
         В приложение
@@ -635,6 +656,7 @@ export default function TrainerScreen({ onExit, topicFilter, placementLevel, onF
   const [loadError, setLoadError] = useState(null);
   const [hintBudget, setHintBudget] = useState(null);
   const isPlacement = Boolean(placementLevel);
+  const isCheckpoint = mode === "checkpoint"; // 9 — контрольная проверка каждые 500 слов
 
   useEffect(() => {
     let cancelled = false;
@@ -648,10 +670,43 @@ export default function TrainerScreen({ onExit, topicFilter, placementLevel, onF
         let built;
         if (isPlacement) {
           built = await buildPlacementQueue(placementLevel);
-        } else if (topicFilter) {
-          const res = await apiGetWords({ level: topicFilter.level, topic: topicFilter.name });
+        } else if (isCheckpoint) {
+          const res = await getCheckpointQueue(30);
           if (res.error) throw new Error(res.error);
-          built = buildQueueFromWords((res.words || []).map((w) => ({ ...w, mode: "exercise" })));
+          built = buildQueueFromWords(res.queue || []);
+        } else if (topicFilter?.repeat) {
+          // "Повторить всю тему" — она уже пройдена, тут не нужен learn-флоу,
+          // сразу задания по всем словам темы.
+          //
+          // 3.5 — раньше здесь брали слова через getWords(), который отдаёт
+          // ТОЛЬКО словарные поля (ru/uz/examples), без личного прогресса —
+          // поэтому word.stage всегда был undefined → 0, и "здание" сверху
+          // весь повтор темы выглядело так, будто прогресс не меняется вообще.
+          // Подмешиваем реальные баллы из getTopicProgress (тот же порядок слов).
+          const [res, progressRes] = await Promise.all([
+            apiGetWords({ level: topicFilter.level, topic: topicFilter.name }),
+            getTopicProgress({ level: topicFilter.level, topic: topicFilter.name }),
+          ]);
+          if (res.error) throw new Error(res.error);
+          const points = progressRes.points || [];
+          const withProgress = (res.words || []).map((w, i) => ({
+            ...w, mode: "exercise", stage: Math.min(5, points[i] || 0), points: points[i] || 0,
+          }));
+          built = buildQueueFromWords(withProgress);
+        } else if (topicFilter) {
+          // 3.1/7 — открытие конкретной подтемы («Часть N») теперь идёт через
+          // ту же SRS-логику (due → learn → practice), что и обычная сессия,
+          // но ограниченную словами этой части: новые слова сперва показываются
+          // карточкой "узнай слово", а не сразу спрашиваются заданием.
+          const sub = topicFilter.subLesson;
+          const res = await apiGetQueue(999, "all", {
+            level: topicFilter.level,
+            topic: topicFilter.name,
+            offset: sub ? sub.offset : undefined,
+            limit: sub ? sub.limit : undefined,
+          });
+          if (res.error) throw new Error(res.error);
+          built = buildQueueFromWords(res.queue || []);
         } else {
           const res = await apiGetQueue(20, mode);
           if (res.error) throw new Error(res.error);
@@ -673,7 +728,7 @@ export default function TrainerScreen({ onExit, topicFilter, placementLevel, onF
     load();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPlacement, placementLevel, topicFilter?.id, topicFilter?.subLesson?.index, mode]);
+  }, [isPlacement, placementLevel, topicFilter?.id, topicFilter?.subLesson?.index, topicFilter?.repeat, mode]);
 
   const requestHint = async () => {
     if (isPlacement) return { allowed: true };
@@ -708,20 +763,30 @@ export default function TrainerScreen({ onExit, topicFilter, placementLevel, onF
   if (queue === null) return <LoadingState />;
   if (queue.length === 0) return <EmptyState onExit={onExit} error={loadError} />;
 
-  const finished = isPlacement && index >= queue.length;
+  const finished = (isPlacement || isCheckpoint) && index >= queue.length;
   if (finished) {
+    if (isCheckpoint) {
+      return (
+        <CheckpointResult
+          score={score}
+          total={queue.length}
+          onFinish={async () => { await completeCheckpoint(); onExit(); }}
+        />
+      );
+    }
     return <PlacementResult score={score} total={queue.length} level={placementLevel} onFinish={() => onFinishPlacement(placementLevel)} />;
   }
 
-  const ex = isPlacement ? queue[index] : queue[index % queue.length];
+  const ex = (isPlacement || isCheckpoint) ? queue[index] : queue[index % queue.length];
   const Renderer = RENDERERS[ex.type];
-  const progress = isPlacement ? index / queue.length : (index % queue.length) / queue.length;
+  const progress = (isPlacement || isCheckpoint) ? index / queue.length : (index % queue.length) / queue.length;
 
   // wasSkipped: пропуск НЕ трогает баллы слова вообще (ни +, ни -).
   const handleDone = (wasCorrect, wasSkipped) => {
-    if (isPlacement) {
+    if (isPlacement || isCheckpoint) {
       if (wasCorrect) setScore((s) => s + 1);
-    } else if (ex.wordId && !wasSkipped) {
+    }
+    if (!isPlacement && ex.wordId && !wasSkipped) {
       // 4 — не блокируем переход к следующему упражнению ожиданием сети, но
       // submitAnswer теперь сам ставит ответ в очередь при сбое (см. api.js),
       // а .catch() тут — просто страховка от неожиданных синхронных ошибок.
@@ -739,6 +804,13 @@ export default function TrainerScreen({ onExit, topicFilter, placementLevel, onF
         <div className="px-5 pb-2 shrink-0">
           <div className="rounded-xl px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: tokens.cardActive, color: tokens.accentTeal }}>
             Проверка уровня {placementLevel} · вопрос {index + 1} из {queue.length}
+          </div>
+        </div>
+      )}
+      {isCheckpoint && (
+        <div className="px-5 pb-2 shrink-0">
+          <div className="rounded-xl px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: tokens.cardActive, color: tokens.accentTeal }}>
+            Контрольная проверка · {index + 1} из {queue.length}
           </div>
         </div>
       )}

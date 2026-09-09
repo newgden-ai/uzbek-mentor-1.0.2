@@ -25,9 +25,31 @@ async function apiPost(body) {
 
 export const hasApi = Boolean(API_URL);
 
+// ---------------------------------------------------------------------------
+// 1.4/3.5 — раньше getCurrentUser() дергал action=user (тяжёлый вызов: пишет
+// last_active, читает весь daily_activity и пересчитывает streak) заново на
+// КАЖДЫЙ вызов apiGet/apiPost — то есть буквально на каждое нажатие в "Базе"
+// (debounce всё равно дергает getDictionary → getCurrentUser) и на каждый
+// ответ в тренажёре. Два тяжёлых похода в Apps Script на одно действие — и
+// есть причина, почему "База" зависала, а ответы иногда как будто не
+// сохранялись (таймаут на двойном round-trip). Теперь user грузится и
+// проверяется через initData ОДИН РАЗ за сессию приложения и кешируется;
+// обновить его (streak/xp) можно явно через refreshUser().
+// ---------------------------------------------------------------------------
+let userPromise = null;
+
 export async function getCurrentUser() {
   if (!hasApi) return { user_id: "demo", username: "denis", level: "", xp: 1240, streak: 7, weekActivity: [true, true, true, true, true, true, true] };
-  return apiGet("user", { init_data: getInitData() });
+  if (!userPromise) userPromise = apiGet("user", { init_data: getInitData() });
+  return userPromise;
+}
+
+// Принудительно перезапрашивает пользователя (streak/xp/weekActivity могли
+// поменяться) — использовать точечно: при заходе на "Прогресс"/"Дом" и после
+// выхода из тренировки, а не на каждый чих.
+export async function refreshUser() {
+  userPromise = null;
+  return getCurrentUser();
 }
 
 // Слова без привязки к юзеру (без персонального stage/decay) — нужно для
@@ -48,10 +70,28 @@ export async function getDictionary({ query, level } = {}) {
   return apiGet("dictionary", { user_id: user.user_id, query, level });
 }
 
-export async function getQueue(count = 10, mode = "all") {
+// 6 — реальные изученные слова пользователя по ВСЕЙ базе (не только по
+// первым 50 строкам, которые отдаёт getDictionary без query) — специально
+// для игры "Найди слова".
+export async function getLearnedWords() {
+  if (!hasApi) return { words: MOCK_WORDS.filter((w) => (w.points || 0) > 0) };
+  const user = await getCurrentUser();
+  return apiGet("learnedWords", { user_id: user.user_id });
+}
+
+export async function getQueue(count = 10, mode = "all", extra = {}) {
   if (!hasApi) return { queue: [] };
   const user = await getCurrentUser();
-  return apiGet("queue", { user_id: user.user_id, count, mode });
+  return apiGet("queue", { user_id: user.user_id, count, mode, ...extra });
+}
+
+// 7 — реальный прогресс по подтемам (сколько слов в каждой части реально
+// достроено), для настоящих статусов "часть 1 done / часть 2 current /..."
+// вместо демо-заглушки, которая делила их пополам просто по статусу темы.
+export async function getTopicProgress({ level, topic } = {}) {
+  if (!hasApi) return { points: [] };
+  const user = await getCurrentUser();
+  return apiGet("topicProgress", { user_id: user.user_id, level, topic });
 }
 
 // 1.6 — отмечает слово как показанное на карточке изучения (до упражнений).
@@ -205,4 +245,43 @@ export async function translateText(text, sourceLang = "ru", targetLang = "uz") 
 export async function getSimilarWords(query, limit = 8) {
   if (!hasApi) return { words: [] };
   return apiGet("similarWords", { query, limit });
+}
+
+// ---------------------------------------------------------------------------
+// 9 — контрольная проверка каждые 500 изученных слов: 30 случайных заданий
+// по ВСЕМУ пройденному языковому материалу (не только по последним 500).
+// ---------------------------------------------------------------------------
+export async function getCheckpointStatus() {
+  if (!hasApi) return { due: false, wordsIntroduced: 0, nextAt: 500 };
+  const user = await getCurrentUser();
+  return apiGet("checkpointStatus", { user_id: user.user_id });
+}
+
+export async function getCheckpointQueue(count = 30) {
+  if (!hasApi) return { queue: [] };
+  const user = await getCurrentUser();
+  return apiGet("checkpointQueue", { user_id: user.user_id, count });
+}
+
+export async function completeCheckpoint() {
+  if (!hasApi) return { ok: true };
+  const user = await getCurrentUser();
+  return apiPost({ action: "completeCheckpoint", user_id: user.user_id });
+}
+
+// ---------------------------------------------------------------------------
+// 8 — «История Узбекистана» и «Законодательство РУз»: отдельные от языкового
+// уровня спецкурсы, каждый разбит на подуровни со своими заданиями. Контент
+// (сами вопросы/материалы) нужно наполнить в листах history_content /
+// law_content — эти функции просто читают то, что там есть; если пусто,
+// фронт покажет «материалы скоро появятся» вместо того, чтобы что-то придумывать.
+// ---------------------------------------------------------------------------
+export async function getSpecialTrack(track) {
+  if (!hasApi) return { subLevels: [] };
+  return apiGet("specialTrack", { track });
+}
+
+export async function getSpecialTrackQueue(track, subLevel) {
+  if (!hasApi) return { queue: [] };
+  return apiGet("specialTrackQueue", { track, subLevel });
 }

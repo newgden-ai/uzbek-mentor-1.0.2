@@ -100,7 +100,7 @@ export default function DictionaryScreen() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Найти слово — рус или uz"
-            className="flex-1 bg-transparent outline-none text-[14px] font-medium placeholder:font-normal"
+            className="flex-1 bg-transparent outline-none text-[16px] font-medium placeholder:font-normal"
             style={{ color: tokens.textPrimary }}
           />
         </div>
@@ -147,7 +147,14 @@ export default function DictionaryScreen() {
           const isOpen = expanded === w.id;
           return (
             <div key={w.id} className="rounded-2xl overflow-hidden" style={{ background: tokens.card }}>
-              <div className="flex items-center justify-between px-4 py-3">
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={() => setExpanded(isOpen ? null : w.id)}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") setExpanded(isOpen ? null : w.id); }}
+                className="w-full flex items-center justify-between px-4 py-3 text-left cursor-pointer"
+                aria-label={isOpen ? "Свернуть карточку слова" : "Открыть слово — перевод и примеры"}
+              >
                 <div className="flex items-center gap-3 min-w-0">
                   <button
                     onClick={(e) => { e.stopPropagation(); setPopover({ points: w.points ?? 0, band: w.band || "none", decay: w.decay || 0 }); }}
@@ -159,9 +166,9 @@ export default function DictionaryScreen() {
                   </button>
                   <div className="min-w-0">
                     <p className="text-[11px] font-bold uppercase tracking-wide" style={{ color: tokens.accentTeal }}>{w.topic}</p>
-                    <div className="flex items-baseline gap-2 mt-0.5">
-                      <span className="font-bold text-[16px]" style={{ color: tokens.textPrimary }}>{w.ru}</span>
-                      <span className="text-[13px]" style={{ color: tokens.textSecondary }}>— {w.uz}</span>
+                    <div className="flex items-baseline gap-2 mt-0.5 flex-wrap">
+                      <span className="font-bold text-[16px]" style={{ color: tokens.textPrimary }}>{w.uz}</span>
+                      <span className="text-[13px]" style={{ color: tokens.textSecondary }}>— {w.ru}</span>
                       {w.audioUrl && (
                         <button onClick={(e) => { e.stopPropagation(); play(w.audioUrl); }} aria-label="Прослушать слово">
                           <Volume2 size={14} color={tokens.accentTeal} />
@@ -170,14 +177,12 @@ export default function DictionaryScreen() {
                     </div>
                   </div>
                 </div>
-                <button
-                  onClick={() => setExpanded(isOpen ? null : w.id)}
+                <div
                   className="shrink-0 rounded-full p-2 ml-2"
                   style={{ background: isOpen ? tokens.cardActive : "transparent" }}
-                  aria-label="Показать примеры"
                 >
                   <ChevronDown size={18} color={tokens.accentTeal} style={{ transform: isOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s ease" }} />
-                </button>
+                </div>
               </div>
 
               {isOpen && (

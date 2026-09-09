@@ -74,7 +74,7 @@ export default function TranslatorScreen({ onExit }) {
           onChange={(e) => { setText(e.target.value); setTranslated(null); }}
           placeholder={sl === "ru" ? "Введи текст на русском..." : "O'zbekcha matn kiriting..."}
           rows={3}
-          className="w-full rounded-2xl px-4 py-3.5 text-[15px] font-semibold outline-none resize-none"
+          className="w-full rounded-2xl px-4 py-3.5 text-[16px] font-semibold outline-none resize-none"
           style={{ background: tokens.card, color: tokens.textPrimary }}
         />
 

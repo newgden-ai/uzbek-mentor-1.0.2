@@ -44,7 +44,7 @@ function PromoCodeCard({ onRedeemed }) {
           value={code}
           onChange={(e) => { setCode(e.target.value); setStatus(null); }}
           placeholder="Введи код"
-          className="flex-1 rounded-xl px-3 py-2 text-[13px] font-semibold outline-none"
+          className="flex-1 rounded-xl px-3 py-2 text-[16px] font-semibold outline-none"
           style={{ background: tokens.cardActive, color: tokens.textPrimary }}
         />
         <button
@@ -71,6 +71,7 @@ function PromoCodeCard({ onRedeemed }) {
 export default function ProgressScreen({ user }) {
   const xp = user?.xp ?? 0;
   const [category, setCategory] = useState("tasks");
+  const [view, setView] = useState("all"); // 2 — "all" (все достижения) | "mine" (только открытые)
   const xpToNext = Math.ceil((xp + 1) / 500) * 500; // грубая прикидка следующего порога, пока нет реальной формулы уровней
   const displayName = user?.first_name || user?.username || "Ты";
   const level = user?.level || "—";
@@ -91,8 +92,9 @@ export default function ProgressScreen({ user }) {
   // пока stats ещё грузится — считаем список пустым, чтобы не мигать неверными
   // unlocked=false для всех и не путать пользователя на долю секунды.
   const achievements = stats ? buildAchievements(stats, topics) : [];
-  const shown = achievements.filter((a) => a.cat === category);
-  const unlockedInCat = shown.filter((a) => a.unlocked).length;
+  const inCategory = achievements.filter((a) => a.cat === category);
+  const shown = view === "mine" ? inCategory.filter((a) => a.unlocked) : inCategory;
+  const unlockedInCat = inCategory.filter((a) => a.unlocked).length;
   const totalUnlocked = achievements.filter((a) => a.unlocked).length;
 
   return (
@@ -153,6 +155,20 @@ export default function ProgressScreen({ user }) {
           <span className="text-[12px] font-bold" style={{ color: tokens.accentTeal }}>{totalUnlocked} / {achievements.length} →</span>
         </div>
 
+        <div className="flex gap-1.5 mb-2.5 rounded-full p-1" style={{ background: tokens.track }}>
+          {[{ id: "all", label: "Все достижения" }, { id: "mine", label: "Мои достижения" }].map((v) => {
+            const isActive = view === v.id;
+            return (
+              <button
+                key={v.id}
+                onClick={() => setView(v.id)}
+                className="flex-1 py-1.5 rounded-full text-[12.5px] font-bold"
+                style={{ background: isActive ? tokens.accentGradient : "transparent", color: isActive ? "#FBF9F4" : tokens.textSecondary }}
+              >{v.label}</button>
+            );
+          })}
+        </div>
+
         <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
           {CATEGORIES.map((c) => {
             const isActive = c.id === category;
@@ -167,7 +183,13 @@ export default function ProgressScreen({ user }) {
           })}
         </div>
 
-        <p className="text-[12px] mt-3 mb-2" style={{ color: tokens.textSecondary }}>{unlockedInCat} / {shown.length} открыто в этой категории</p>
+        <p className="text-[12px] mt-3 mb-2" style={{ color: tokens.textSecondary }}>{unlockedInCat} / {inCategory.length} открыто в этой категории</p>
+
+        {shown.length === 0 && view === "mine" && (
+          <p className="text-center text-[12.5px] mt-6" style={{ color: tokens.textSecondary }}>
+            В этой категории пока нет открытых достижений — загляни в «Все достижения», чтобы увидеть, к чему стремиться
+          </p>
+        )}
 
         <div className="grid grid-cols-2 gap-2.5">
           {shown.map((a, i) => {

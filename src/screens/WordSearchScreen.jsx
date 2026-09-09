@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { X, Loader2, Check } from "lucide-react";
 import { tokens } from "../theme.js";
-import { getDictionary } from "../api.js";
+import { getLearnedWords } from "../api.js";
 
 const GRID_SIZE = 8;
 const FILLER_LETTERS = "ABDEFGHIJKLMNOPQRSTUVXYZ".split("");
@@ -87,12 +87,11 @@ export default function WordSearchScreen({ onExit }) {
   const containerRef = useRef(null);
 
   useEffect(() => {
-    getDictionary({}).then((res) => {
+    // 6 — реальные изученные слова пользователя по всей базе, не только по
+    // первым 50 строкам листа (см. api.js/getLearnedWords).
+    getLearnedWords().then((res) => {
       const pool = (res.words || []).filter((w) => /^[a-zA-Zʻ'\u02BB]+$/.test(w.uz) && w.uz.length >= 3 && w.uz.length <= 8);
-      const learned = pool.filter((w) => (w.points || 0) > 0);
-      const chosen = (learned.length >= 4 ? learned : pool)
-        .sort(() => Math.random() - 0.5)
-        .slice(0, 6);
+      const chosen = pool.sort(() => Math.random() - 0.5).slice(0, 6);
       setSourceWords(chosen);
     });
   }, []);

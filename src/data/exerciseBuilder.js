@@ -70,9 +70,31 @@ function buildTranslateToUz(word) {
     wordId: word.id,
     wordStage: word.stage || 0,
     prompt: "Переведи на узбекский",
+    placeholder: "Напиши перевод на узбекском...",
     source: word.ru,
     accept: [word.uz.toLowerCase()],
     word: word.uz,
+    audioUrl: word.audioUrl || "",
+  };
+}
+
+// 3.6 — симметричная пара к buildTranslateToUz: узбекское слово показано,
+// перевод на русский печатается руками. Раньше гарантированно "всегда строится"
+// был только ru→uz вариант (buildTranslateToUz), а из uz→ru — только buildChoice,
+// который мог не собраться при маленьком пуле слов (< MIN_DISTRACTORS кандидатов
+// с разным .ru). Из-за этого на практике заданий "узбекское слово → перевод"
+// было заметно меньше, чем "русское слово → узбекский", хотя оба типа как будто
+// "были в коде". Теперь у uz→ru тоже есть гарантированный (никогда не null) билдер.
+function buildTranslateToRu(word) {
+  return {
+    type: "translateToRu",
+    wordId: word.id,
+    wordStage: word.stage || 0,
+    prompt: "Переведи на русский",
+    placeholder: "Напиши перевод на русском...",
+    source: word.uz,
+    accept: [word.ru.toLowerCase()],
+    word: word.ru,
     audioUrl: word.audioUrl || "",
   };
 }
@@ -93,28 +115,41 @@ function buildSpell(word) {
 
 // Пробует построить упражнение случайного типа, с фоллбеком на перевод
 // (он единственный не требует ни примеров, ни соседних слов — значит всегда сработает).
-export function buildExercise(word, pool) {
-  const candidates = [
-    () => buildTranslateToUz(word),
-    () => buildChoice(word, pool),
+// direction: "ruToUz" | "uzToRu" — какое направление перевода строим в этот раз
+// (см. buildQueueFromWords — чередуем 50/50, а не полагаемся на случай).
+export function buildExercise(word, pool, direction) {
+  const ruToUz = [
     () => buildFillBlank(word, pool),
     () => buildAssembly(word),
     () => buildSpell(word),
+    () => buildTranslateToUz(word),
   ];
-  const order = sample(candidates, candidates.length);
+  const uzToRu = [
+    () => buildChoice(word, pool),
+    () => buildTranslateToRu(word),
+  ];
+  const primary = direction === "uzToRu" ? uzToRu : ruToUz;
+  const fallback = direction === "uzToRu" ? buildTranslateToRu(word) : buildTranslateToUz(word);
+
+  const order = sample(primary, primary.length);
   for (const build of order) {
     const ex = build();
     if (ex) return ex;
   }
-  return buildTranslateToUz(word);
+  return fallback;
 }
 
 // items приходят от getQueue уже помечены mode: "learn" (карточка изучения,
 // см. 1.6) | "exercise" (обычное задание). Для learn — не строим упражнение,
 // отдаём как есть, TrainerScreen сам решит, что с этим делать.
 export function buildQueueFromWords(items) {
+  let exerciseIndex = 0;
   return items.map((item) => {
     if (item.mode === "learn") return { ...item, type: "learn" };
-    return buildExercise(item, items);
+    // Чередуем направление по порядку заданий (не по слову) — так за сессию
+    // из 20 заданий будет ~10 ru→uz и ~10 uz→ru, а не "как повезёт со случайным shuffle".
+    const direction = exerciseIndex % 2 === 0 ? "ruToUz" : "uzToRu";
+    exerciseIndex++;
+    return buildExercise(item, items, direction);
   });
 }

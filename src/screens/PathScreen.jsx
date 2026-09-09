@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Check, Lock, Play, RotateCcw, ChevronRight, Loader2 } from "lucide-react";
 import { tokens, levelColor } from "../theme.js";
-import { getPath } from "../api.js";
+import { getPath, getTopicProgress } from "../api.js";
 
 const LEVEL_ORDER = ["A1", "A2", "B1", "B2"];
 const CHUNK_SIZE = 12; // сколько слов в одной подтеме — держит уроки короткими
@@ -29,22 +29,26 @@ function groupIntoLevels(topics) {
   });
 }
 
-// Разбивает тему на подтемы и расставляет статусы в зависимости от статуса темы.
-// TODO: когда подключим API — статус подтемы придёт из user_words (реальный прогресс),
-// это временное распределение только для демонстрации механики.
-function buildSubLessons(topic) {
-  const n = Math.max(1, Math.ceil(topic.count / CHUNK_SIZE));
-  const subs = Array.from({ length: n }, (_, i) => {
+// 7 — реальные подтемы (Часть 1/2/3…) по фактическому прогрессу (points каждого
+// слова из getTopicProgress), а не по угадайке "раз тема done — все части done,
+// раз current — ровно половина". "current" — первая ещё не полностью пройденная
+// часть, всё, что дальше — locked, всё, что раньше — done.
+function computeSubLessons(count, points) {
+  const n = Math.max(1, Math.ceil(count / CHUNK_SIZE));
+  const subs = [];
+  let unlockedNext = true;
+  for (let i = 0; i < n; i++) {
     const from = i * CHUNK_SIZE + 1;
-    const to = Math.min((i + 1) * CHUNK_SIZE, topic.count);
-    return { index: i, label: `Часть ${i + 1}`, range: `${from}–${to} слов`, status: "locked" };
-  });
-
-  if (topic.status === "done") {
-    subs.forEach((s) => (s.status = "done"));
-  } else if (topic.status === "current") {
-    const currentIdx = Math.floor(n / 2);
-    subs.forEach((s, i) => (s.status = i < currentIdx ? "done" : i === currentIdx ? "current" : "locked"));
+    const to = Math.min((i + 1) * CHUNK_SIZE, count);
+    const chunkPoints = points ? points.slice(i * CHUNK_SIZE, i * CHUNK_SIZE + CHUNK_SIZE) : [];
+    const isDone = chunkPoints.length > 0 && chunkPoints.every((p) => p >= 5);
+    let status;
+    if (!points) status = i === 0 ? "current" : "locked"; // прогресс ещё грузится
+    else if (isDone) status = "done";
+    else if (unlockedNext) status = "current";
+    else status = "locked";
+    if (!isDone) unlockedNext = false;
+    subs.push({ index: i, label: `Часть ${i + 1}`, range: `${from}–${to} слов`, status, offset: i * CHUNK_SIZE, limit: to - from + 1 });
   }
   return subs;
 }
@@ -85,7 +89,18 @@ function TopicNode({ topic, color, isExpanded, onToggle, onOpenLesson, onRepeat 
   const isDone = topic.status === "done";
   const isCurrent = topic.status === "current";
   const isLocked = topic.status === "locked";
-  const subLessons = buildSubLessons(topic);
+  const [points, setPoints] = useState(null); // null пока грузится реальный прогресс частей
+
+  useEffect(() => {
+    if (!isExpanded || isLocked) return;
+    let cancelled = false;
+    getTopicProgress({ level: topic.level, topic: topic.name }).then((res) => {
+      if (!cancelled) setPoints(res.points || []);
+    });
+    return () => { cancelled = true; };
+  }, [isExpanded, isLocked, topic.level, topic.name]);
+
+  const subLessons = computeSubLessons(topic.count, points);
 
   return (
     <div className="flex items-start gap-3">
@@ -128,6 +143,12 @@ function TopicNode({ topic, color, isExpanded, onToggle, onOpenLesson, onRepeat 
 
         {isExpanded && (
           <div className="px-4 pb-3 pt-1" style={{ borderTop: `1px solid ${tokens.track}` }}>
+            {points === null && !isLocked && (
+              <div className="flex items-center gap-2 py-2">
+                <Loader2 size={14} color={tokens.accentTeal} className="animate-spin" />
+                <span className="text-[11.5px]" style={{ color: tokens.textSecondary }}>Считаем прогресс по частям…</span>
+              </div>
+            )}
             {subLessons.map((s) => (
               <SubLessonRow key={s.index} sub={s} color={color} onOpen={(sub) => onOpenLesson(topic, sub)} />
             ))}
@@ -152,7 +173,7 @@ function TopicNode({ topic, color, isExpanded, onToggle, onOpenLesson, onRepeat 
   );
 }
 
-export default function PathScreen({ onOpenLesson, onRepeatTopic }) {
+export default function PathScreen({ onOpenLesson, onRepeatTopic, onOpenSpecialTrack }) {
   const [openLevel, setOpenLevel] = useState("A1");
   const [expandedTopicId, setExpandedTopicId] = useState(null);
   const [levels, setLevels] = useState(null); // null = загрузка
@@ -214,6 +235,35 @@ export default function PathScreen({ onOpenLesson, onRepeatTopic }) {
                         onRepeat={onRepeatTopic}
                       />
                     ))}
+                    {/* 8 — «История Узбекистана» и «Законодательство РУз»: отдельные
+                        спецкурсы, изучаются только по нажатию, без привязки к уровню
+                        языка — размещены как отдельный блок в конце уровня A1 */}
+                    {lvl.level === "A1" && (
+                      <div className="flex flex-col gap-2 mt-1 mb-2">
+                        <button
+                          onClick={() => onOpenSpecialTrack?.("history")}
+                          className="w-full text-left rounded-2xl px-4 py-3 flex items-center justify-between"
+                          style={{ background: tokens.card, border: `1px dashed ${tokens.track}` }}
+                        >
+                          <div>
+                            <p className="font-bold text-[13.5px]" style={{ color: tokens.textPrimary }}>🏛 История Узбекистана</p>
+                            <p className="text-[11.5px] mt-0.5" style={{ color: tokens.textSecondary }}>отдельный курс · открывается вручную</p>
+                          </div>
+                          <ChevronRight size={15} color={tokens.textSecondary} />
+                        </button>
+                        <button
+                          onClick={() => onOpenSpecialTrack?.("law")}
+                          className="w-full text-left rounded-2xl px-4 py-3 flex items-center justify-between"
+                          style={{ background: tokens.card, border: `1px dashed ${tokens.track}` }}
+                        >
+                          <div>
+                            <p className="font-bold text-[13.5px]" style={{ color: tokens.textPrimary }}>⚖️ Законодательство РУз</p>
+                            <p className="text-[11.5px] mt-0.5" style={{ color: tokens.textSecondary }}>отдельный курс · открывается вручную</p>
+                          </div>
+                          <ChevronRight size={15} color={tokens.textSecondary} />
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
