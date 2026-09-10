@@ -68,10 +68,16 @@ export default function SpecialTrackScreen({ track, onExit }) {
   const meta = TRACK_META[track] || TRACK_META.history;
   const Icon = meta.icon;
   const [subLevels, setSubLevels] = useState(null);
+  const [loadError, setLoadError] = useState(null); // 5 — настоящая ошибка конфигурации, а не "пока пусто"
   const [activeQuiz, setActiveQuiz] = useState(null); // null | items[]
 
   useEffect(() => {
-    getSpecialTrack(track).then((res) => setSubLevels(res.subLevels || []));
+    setSubLevels(null);
+    setLoadError(null);
+    getSpecialTrack(track).then((res) => {
+      if (res.error) { setLoadError(res.error); setSubLevels([]); return; }
+      setSubLevels(res.subLevels || []);
+    });
   }, [track]);
 
   const openSubLevel = async (sub) => {
@@ -101,9 +107,11 @@ export default function SpecialTrackScreen({ track, onExit }) {
         )}
         {subLevels !== null && subLevels.length === 0 && (
           <div className="flex flex-col items-center gap-2 mt-10 px-4 text-center">
-            <p className="font-bold text-[15px]" style={{ color: tokens.textPrimary }}>Материалы скоро появятся</p>
+            <p className="font-bold text-[15px]" style={{ color: tokens.textPrimary }}>
+              {loadError ? "Не удалось загрузить материалы" : "Материалы скоро появятся"}
+            </p>
             <p className="text-[13px]" style={{ color: tokens.textSecondary }}>
-              Этот раздел изучается отдельно от языкового уровня. Контент по «{meta.title.toLowerCase()}» ещё не добавлен в базу.
+              {loadError || `Этот раздел изучается отдельно от языкового уровня. Контент по «${meta.title.toLowerCase()}» ещё не добавлен в базу.`}
             </p>
           </div>
         )}

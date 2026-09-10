@@ -4,23 +4,9 @@ import { tokens } from "../theme.js";
 import { getDictionary } from "../api.js";
 import { LandmarkStage } from "../components/LandmarkStage.jsx";
 import { TeaBowl } from "../components/TeaBowl.jsx";
+import { usePlayer } from "../utils/audio.js";
 
 const DEBOUNCE_MS = 350;
-
-// 2.1 — 1-е прослушивание x1, 2-е и 3-е — x0.75, дальше снова x1 (счётчик по URL,
-// живёт на весь экран — держится, даже если карточку свернуть/развернуть заново).
-function usePlayer() {
-  const countsRef = useRef({});
-  return (url) => {
-    if (!url) return;
-    const count = (countsRef.current[url] || 0) + 1;
-    countsRef.current[url] = count;
-    const rate = count === 2 || count === 3 ? 0.75 : 1;
-    const audio = new Audio(url);
-    audio.playbackRate = rate;
-    audio.play().catch(() => {});
-  };
-}
 
 const BAND_LABELS = {
   none: "Не изучено",

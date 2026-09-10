@@ -60,12 +60,28 @@ function getSpreadsheet() {
 // не лист в общей таблице со словами) — так их может наполнять/редактировать
 // кто-то другой, не трогая словарь вообще. ID каждого файла — в своих
 // свойствах скрипта: HISTORY_SPREADSHEET_ID и LAW_SPREADSHEET_ID.
+//
+// 5 — раньше SpreadsheetApp.openById(id) вызывался без try/catch: если в
+// свойстве оказывался неверный ID (например, скопирован вместе с пробелом
+// или это ссылка целиком, а не голый ID) или скрипт не имеет доступа к файлу,
+// вызов бросал исключение. Оно долетало до общего try/catch в routeRequest()
+// и превращалось в {error: ...} — но фронт (SpecialTrackScreen.jsx) видел
+// только "нет subLevels" и молча показывал "материалы скоро появятся",
+// маскируя настоящую причину (неверный ID/нет доступа) под "просто пока нет
+// контента". Теперь ошибка открытия таблицы возвращается явным текстом.
 function getSpecialTrackSpreadsheet(track) {
   const propName = track === "history" ? "HISTORY_SPREADSHEET_ID" : track === "law" ? "LAW_SPREADSHEET_ID" : null;
-  if (!propName) return null;
-  const id = PropertiesService.getScriptProperties().getProperty(propName);
-  if (!id) return null; // не настроено — специально не кидаем ошибку, фронт покажет "материалы скоро появятся"
-  return SpreadsheetApp.openById(id);
+  if (!propName) return { ss: null, error: "неизвестный трек: " + track };
+  const id = (PropertiesService.getScriptProperties().getProperty(propName) || "").trim();
+  if (!id) return { ss: null, error: null }; // не настроено — специально не ошибка, фронт покажет "материалы скоро появятся"
+  try {
+    return { ss: SpreadsheetApp.openById(id), error: null };
+  } catch (err) {
+    return {
+      ss: null,
+      error: `Не удалось открыть таблицу "${propName}" (ID: "${id}"): ${err}. Проверь, что в свойстве скрипта лежит именно ID файла (часть ссылки между /d/ и /edit), и что таблица расшарена как минимум "Читатель" для аккаунта, под которым выполняется скрипт.`,
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1117,19 +1133,27 @@ function completeCheckpoint(userId) {
 // колонками: id, subLevel, subLevelLabel, question, correct, wrong1, wrong2, wrong3.
 // Если файл не подключён (нет ID в свойствах скрипта) или лист "content" пуст —
 // отдаём пустой список подуровней, фронт покажет "материалы скоро появятся"
-// вместо выдуманных фактов об истории/законах (это осознанно).
+// вместо выдуманных фактов об истории/законах (это осознанно). Но если ID
+// задан и файл при этом не открывается (см. getSpecialTrackSpreadsheet) или
+// лист называется не "content" — это уже настоящая ошибка конфигурации, и
+// она возвращается явно, а не маскируется под "пусто".
 // ---------------------------------------------------------------------------
 const SPECIAL_TRACK_SHEET_NAME = "content";
 
 function getSpecialTrackRows(track) {
-  const ss = getSpecialTrackSpreadsheet(track);
-  if (!ss) return [];
+  const { ss, error } = getSpecialTrackSpreadsheet(track);
+  if (error) return { rows: null, error };
+  if (!ss) return { rows: [], error: null }; // действительно не настроено
   const sh = ss.getSheetByName(SPECIAL_TRACK_SHEET_NAME);
-  return readRowsFromSheetObject(sh);
+  if (!sh) {
+    return { rows: null, error: `В таблице для "${track}" нет листа "${SPECIAL_TRACK_SHEET_NAME}" (проверь регистр и пробелы в названии листа).` };
+  }
+  return { rows: readRowsFromSheetObject(sh), error: null };
 }
 
 function getSpecialTrack(track) {
-  const rows = getSpecialTrackRows(track);
+  const { rows, error } = getSpecialTrackRows(track);
+  if (error) return { error };
   const bySub = {};
   rows.forEach((r) => {
     const key = String(r.subLevel || "1");
@@ -1140,8 +1164,10 @@ function getSpecialTrack(track) {
 }
 
 function getSpecialTrackQueue(track, subLevel) {
-  const rows = getSpecialTrackRows(track).filter((r) => String(r.subLevel || "1") === String(subLevel));
-  const items = rows.map((r) => ({
+  const { rows, error } = getSpecialTrackRows(track);
+  if (error) return { error };
+  const filtered = rows.filter((r) => String(r.subLevel || "1") === String(subLevel));
+  const items = filtered.map((r) => ({
     id: r.id,
     type: "choice",
     prompt: track === "history" ? "История Узбекистана" : "Законодательство РУз",

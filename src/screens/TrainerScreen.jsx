@@ -1,24 +1,10 @@
-import React, { useState, useEffect, useRef } from "react";
-
-// 2.1 — 1-е прослушивание x1, 2-е и 3-е — x0.75, дальше снова x1.
-// Счётчик держим по URL, чтобы одно и то же слово/пример считалось отдельно от других.
-function usePlayer() {
-  const countsRef = useRef({});
-  return (url) => {
-    if (!url) return;
-    const count = (countsRef.current[url] || 0) + 1;
-    countsRef.current[url] = count;
-    const rate = count === 2 || count === 3 ? 0.75 : 1;
-    const audio = new Audio(url);
-    audio.playbackRate = rate;
-    audio.play().catch(() => {});
-  };
-}
+import React, { useState, useEffect, useCallback } from "react";
 import { Heart, Volume2, Check, RotateCcw, X, Lightbulb, SkipForward, Trophy, Loader2, AlertTriangle, BookOpen } from "lucide-react";
 import { tokens } from "../theme.js";
 import { LandmarkStage, StagePopover } from "../components/LandmarkStage.jsx";
 import { buildPlacementQueue } from "../data/placement.js";
 import { buildQueueFromWords } from "../data/exerciseBuilder.js";
+import { usePlayer } from "../utils/audio.js";
 import {
   getQueue as apiGetQueue,
   getWords as apiGetWords,
@@ -188,7 +174,11 @@ function FeedbackBar({ checked, correctText, onNext }) {
 }
 
 // ---- 1.6 — карточка изучения нового слова, до упражнений ----
-function LearnCard({ ex, onDone }) {
+// 2 — добавлена кнопка "Повторить": в отличие от "Знаю" она НЕ отмечает слово
+// как показанное (introduceWord не вызывается) и возвращает его обратно в
+// подборку через несколько карточек — чтобы слово гарантированно показалось
+// ещё раз в этой же сессии, прежде чем считаться изученным.
+function LearnCard({ ex, onDone, onRepeat }) {
   const example = ex.examples?.[0];
   const play = usePlayer();
   return (
@@ -215,10 +205,17 @@ function LearnCard({ ex, onDone }) {
           </div>
         )}
       </div>
-      <div className="px-2 pb-4">
+      <div className="px-2 pb-4 flex gap-2.5">
+        <button
+          onClick={() => onRepeat(ex)}
+          className="flex-1 rounded-2xl py-4 font-extrabold text-[14px] flex items-center justify-center gap-1.5"
+          style={{ background: tokens.card, color: tokens.textSecondary }}
+        >
+          <RotateCcw size={15} /> Повторить
+        </button>
         <button
           onClick={() => { introduceWord(ex.wordId); onDone(false, false); }}
-          className="w-full rounded-2xl py-4 font-extrabold text-[15px]"
+          className="flex-1 rounded-2xl py-4 font-extrabold text-[15px]"
           style={{ background: tokens.accentGradient, color: "#FBF9F4" }}
         >
           Знаю →
@@ -631,15 +628,15 @@ function LoadingState() {
   );
 }
 
-function EmptyState({ onExit, error }) {
+function EmptyState({ onExit, error, completed }) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center gap-3 px-8 text-center">
-      {error ? <AlertTriangle size={28} color={tokens.wrong} /> : null}
+      {error ? <AlertTriangle size={28} color={tokens.wrong} /> : completed ? <Trophy size={28} color={tokens.accentTeal} /> : null}
       <p className="font-bold text-[15px]" style={{ color: tokens.textPrimary }}>
-        {error ? "Не удалось загрузить задания" : "Пока нечего повторять"}
+        {error ? "Не удалось загрузить задания" : completed ? "Отличная работа!" : "Пока нечего повторять"}
       </p>
       <p className="text-[13px]" style={{ color: tokens.textSecondary }}>
-        {error || "В этой подборке не нашлось слов с примерами для упражнений"}
+        {error || (completed ? "Ты прошёл всё, что доступно прямо сейчас — новые слова и повторы появятся по расписанию" : "В этой подборке не нашлось слов с примерами для упражнений")}
       </p>
       <button onClick={onExit} className="mt-2 rounded-full px-6 py-2.5 font-bold text-[13px]" style={{ background: tokens.accentGradient, color: "#FBF9F4" }}>
         Назад
@@ -654,81 +651,95 @@ export default function TrainerScreen({ onExit, topicFilter, placementLevel, onF
   const [score, setScore] = useState(0);
   const [queue, setQueue] = useState(null);
   const [loadError, setLoadError] = useState(null);
+  const [sessionComplete, setSessionComplete] = useState(false); // 3 — подборка кончилась не из-за ошибки, а потому что всё пройдено
   const [hintBudget, setHintBudget] = useState(null);
   const isPlacement = Boolean(placementLevel);
   const isCheckpoint = mode === "checkpoint"; // 9 — контрольная проверка каждые 500 слов
+
+  // 3 — вынесено в переиспользуемую функцию: раньше подборка грузилась с
+  // сервера только один раз при заходе на экран, а после того как пользователь
+  // проходил её всю, индекс просто "заворачивался" по кругу
+  // (queue[index % queue.length]) — та же СТАРАЯ подборка (включая уже
+  // показанные карточки "новое слово") крутилась бесконечно. Слова, только
+  // что отмеченные "Знаю", не превращались в упражнения на закрепление в
+  // рамках этой же сессии, а прогресс/статистика не менялись, потому что
+  // submitAnswer (который их обновляет) для них так и не вызывался. Теперь
+  // эта функция вызывается заново по достижении конца подборки (см. handleDone) —
+  // и подтягивает свежие данные с сервера, где только что изученные слова уже
+  // придут как упражнения на закрепление (getQueue на бэкенде это учитывает).
+  const loadQueue = useCallback(async () => {
+    if (isPlacement) return buildPlacementQueue(placementLevel);
+    if (isCheckpoint) {
+      const res = await getCheckpointQueue(30);
+      if (res.error) throw new Error(res.error);
+      return buildQueueFromWords(res.queue || []);
+    }
+    if (topicFilter?.repeat) {
+      // "Повторить всю тему" — она уже пройдена, тут не нужен learn-флоу,
+      // сразу задания по всем словам темы.
+      //
+      // 3.5 — раньше здесь брали слова через getWords(), который отдаёт
+      // ТОЛЬКО словарные поля (ru/uz/examples), без личного прогресса —
+      // поэтому word.stage всегда был undefined → 0, и "здание" сверху
+      // весь повтор темы выглядело так, будто прогресс не меняется вообще.
+      // Подмешиваем реальные баллы из getTopicProgress (тот же порядок слов).
+      const [res, progressRes] = await Promise.all([
+        apiGetWords({ level: topicFilter.level, topic: topicFilter.name }),
+        getTopicProgress({ level: topicFilter.level, topic: topicFilter.name }),
+      ]);
+      if (res.error) throw new Error(res.error);
+      const points = progressRes.points || [];
+      const withProgress = (res.words || []).map((w, i) => ({
+        ...w, mode: "exercise", stage: Math.min(5, points[i] || 0), points: points[i] || 0,
+      }));
+      return buildQueueFromWords(withProgress);
+    }
+    if (topicFilter) {
+      // 3.1/7 — открытие конкретной подтемы («Часть N») идёт через ту же
+      // SRS-логику (due → learn → practice), что и обычная сессия, но
+      // ограниченную словами этой части: новые слова сперва показываются
+      // карточкой "узнай слово", а не сразу спрашиваются заданием.
+      const sub = topicFilter.subLesson;
+      const res = await apiGetQueue(999, "all", {
+        level: topicFilter.level,
+        topic: topicFilter.name,
+        offset: sub ? sub.offset : undefined,
+        limit: sub ? sub.limit : undefined,
+      });
+      if (res.error) throw new Error(res.error);
+      return buildQueueFromWords(res.queue || []);
+    }
+    const res = await apiGetQueue(20, mode);
+    if (res.error) throw new Error(res.error);
+    return buildQueueFromWords(res.queue || []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPlacement, placementLevel, isCheckpoint, topicFilter?.id, topicFilter?.subLesson?.index, topicFilter?.repeat, topicFilter?.level, topicFilter?.name, mode]);
 
   useEffect(() => {
     let cancelled = false;
     setQueue(null);
     setLoadError(null);
+    setSessionComplete(false);
     setIndex(0);
     setScore(0);
 
-    async function load() {
-      try {
-        let built;
-        if (isPlacement) {
-          built = await buildPlacementQueue(placementLevel);
-        } else if (isCheckpoint) {
-          const res = await getCheckpointQueue(30);
-          if (res.error) throw new Error(res.error);
-          built = buildQueueFromWords(res.queue || []);
-        } else if (topicFilter?.repeat) {
-          // "Повторить всю тему" — она уже пройдена, тут не нужен learn-флоу,
-          // сразу задания по всем словам темы.
-          //
-          // 3.5 — раньше здесь брали слова через getWords(), который отдаёт
-          // ТОЛЬКО словарные поля (ru/uz/examples), без личного прогресса —
-          // поэтому word.stage всегда был undefined → 0, и "здание" сверху
-          // весь повтор темы выглядело так, будто прогресс не меняется вообще.
-          // Подмешиваем реальные баллы из getTopicProgress (тот же порядок слов).
-          const [res, progressRes] = await Promise.all([
-            apiGetWords({ level: topicFilter.level, topic: topicFilter.name }),
-            getTopicProgress({ level: topicFilter.level, topic: topicFilter.name }),
-          ]);
-          if (res.error) throw new Error(res.error);
-          const points = progressRes.points || [];
-          const withProgress = (res.words || []).map((w, i) => ({
-            ...w, mode: "exercise", stage: Math.min(5, points[i] || 0), points: points[i] || 0,
-          }));
-          built = buildQueueFromWords(withProgress);
-        } else if (topicFilter) {
-          // 3.1/7 — открытие конкретной подтемы («Часть N») теперь идёт через
-          // ту же SRS-логику (due → learn → practice), что и обычная сессия,
-          // но ограниченную словами этой части: новые слова сперва показываются
-          // карточкой "узнай слово", а не сразу спрашиваются заданием.
-          const sub = topicFilter.subLesson;
-          const res = await apiGetQueue(999, "all", {
-            level: topicFilter.level,
-            topic: topicFilter.name,
-            offset: sub ? sub.offset : undefined,
-            limit: sub ? sub.limit : undefined,
-          });
-          if (res.error) throw new Error(res.error);
-          built = buildQueueFromWords(res.queue || []);
-        } else {
-          const res = await apiGetQueue(20, mode);
-          if (res.error) throw new Error(res.error);
-          built = buildQueueFromWords(res.queue || []);
-        }
-        if (!cancelled) setQueue(built);
-
-        if (!isPlacement && !cancelled) {
+    loadQueue()
+      .then(async (built) => {
+        if (cancelled) return;
+        setQueue(built);
+        if (!isPlacement) {
           const status = await getHintStatus();
           if (!cancelled) setHintBudget(status.error ? null : { remaining: status.remaining, tier: status.tier });
         }
-      } catch (err) {
+      })
+      .catch((err) => {
         if (!cancelled) {
           setLoadError(String(err.message || err));
           setQueue([]);
         }
-      }
-    }
-    load();
+      });
     return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPlacement, placementLevel, topicFilter?.id, topicFilter?.subLesson?.index, topicFilter?.repeat, mode]);
+  }, [loadQueue]);
 
   const requestHint = async () => {
     if (isPlacement) return { allowed: true };
@@ -761,7 +772,7 @@ export default function TrainerScreen({ onExit, topicFilter, placementLevel, onF
   };
 
   if (queue === null) return <LoadingState />;
-  if (queue.length === 0) return <EmptyState onExit={onExit} error={loadError} />;
+  if (queue.length === 0) return <EmptyState onExit={onExit} error={loadError} completed={sessionComplete} />;
 
   const finished = (isPlacement || isCheckpoint) && index >= queue.length;
   if (finished) {
@@ -793,7 +804,33 @@ export default function TrainerScreen({ onExit, topicFilter, placementLevel, onF
       submitAnswer(ex.wordId, wasCorrect).catch(() => {});
     }
     setHintBudget((b) => (b?.adError ? { ...b, adError: null } : b)); // не тянуть сообщение о рекламе в следующее упражнение
-    setIndex((i) => i + 1);
+
+    // 3 — по достижении конца подборки (обычная сессия/подтема — не
+    // placement/checkpoint, у них своя логика завершения выше) больше НЕ
+    // заворачиваем индекс по кругу на ту же старую подборку, а подгружаем
+    // свежую с сервера. См. комментарий у loadQueue.
+    const isRegularSession = !isPlacement && !isCheckpoint;
+    if (isRegularSession && index + 1 >= queue.length) {
+      setQueue(null);
+      setIndex(0);
+      loadQueue()
+        .then((built) => { setQueue(built); setSessionComplete(built.length === 0); })
+        .catch((err) => { setLoadError(String(err.message || err)); setQueue([]); setSessionComplete(false); });
+    } else {
+      setIndex((i) => i + 1);
+    }
+  };
+
+  // 2 — "Повторить" на карточке нового слова: НЕ отмечает слово изученным
+  // (introduceWord не вызывается) и возвращает его в подборку через пару
+  // карточек, чтобы оно гарантированно показалось ещё раз в этой сессии.
+  const handleRepeatLearn = (word) => {
+    setQueue((q) => {
+      if (!q) return q;
+      const rest = q.slice(0, index).concat(q.slice(index + 1));
+      const reinsertAt = Math.min(rest.length, index + 3);
+      return [...rest.slice(0, reinsertAt), word, ...rest.slice(reinsertAt)];
+    });
   };
 
   return (
@@ -823,7 +860,7 @@ export default function TrainerScreen({ onExit, topicFilter, placementLevel, onF
           </div>
         </div>
       )}
-      <Renderer key={index} ex={ex} onDone={handleDone} hintBudget={hintBudget} onRequestHint={requestHint} onWatchAd={watchAd} adBusy={adBusy} adAvailable={Boolean(getAdController())} />
+      <Renderer key={index} ex={ex} onDone={handleDone} onRepeat={handleRepeatLearn} hintBudget={hintBudget} onRequestHint={requestHint} onWatchAd={watchAd} adBusy={adBusy} adAvailable={Boolean(getAdController())} />
     </div>
   );
 }
