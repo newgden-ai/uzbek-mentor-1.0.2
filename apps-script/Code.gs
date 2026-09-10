@@ -404,11 +404,26 @@ function rowToWord(row) {
   };
 }
 
-function getWords(level, topic) {
+// 2/4 — КРИТИЧЕСКИЙ БАГ: getWords() возвращал ГОЛЫЙ МАССИВ вместо {words: [...]},
+// хотя абсолютно весь фронт (placement.js, DictionaryScreen, TrainerScreen —
+// "Повторить тему") ожидает именно {words: [...]} (как и все остальные
+// экшены). Из-за этого res.words всегда было undefined → [] — то есть
+// ЛЮБОЙ вызов action=words с фронта молча возвращал пустой список, даже если
+// слова реально есть в таблице. Это ломало: (2) проверку уровня при выборе
+// в "Дом" (пул слов для теста всегда получался пустым → пустой экран),
+// (3.5) "Повторить тему" в "Путь". Внутренний вызов из getDictionary (не
+// через HTTP, а прямой JS-вызов) ожидал именно массив — поэтому переименовал
+// его в getWordsRaw и сделал getWords() тонкой обёрткой с правильным
+// контрактом {words: [...]} для внешнего API.
+function getWordsRaw(level, topic) {
   let rows = readWordRows();
   if (level) rows = rows.filter((r) => r[WCOL.LEVEL] === level);
   if (topic) rows = rows.filter((r) => r[WCOL.TOPIC] === topic);
   return rows.map(rowToWord);
+}
+
+function getWords(level, topic) {
+  return { words: getWordsRaw(level, topic) };
 }
 
 // 7 — реальный прогресс по подтемам (Часть 1/2/3…) внутри темы, вместо
@@ -978,7 +993,7 @@ function redeemPromoCode(userId, code) {
 // dictionary — слова + персональная стадия/декей конкретного юзера
 // ---------------------------------------------------------------------------
 function getDictionary(userId, query, level) {
-  const words = getWords(level, null);
+  const words = getWordsRaw(level, null);
   const userWords = readRows("user_words").filter((r) => String(r.user_id) === String(userId));
   const byWordId = {};
   userWords.forEach((r) => (byWordId[r.word_id] = r));

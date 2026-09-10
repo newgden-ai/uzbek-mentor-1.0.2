@@ -214,7 +214,16 @@ function LearnCard({ ex, onDone, onRepeat }) {
           <RotateCcw size={15} /> Повторить
         </button>
         <button
-          onClick={() => { introduceWord(ex.wordId); onDone(false, false); }}
+          onClick={async () => {
+            // 1 — раньше introduceWord() не дожидались перед переходом дальше:
+            // если это было последнее слово в подборке, TrainerScreen сразу
+            // запрашивал у сервера свежую подборку (см. handleDone), и та
+            // запись introduceWord могла ещё не успеть сохраниться в таблице —
+            // сервер отдавал слово снова как "новое" (learn), а не как
+            // упражнение. Теперь дожидаемся подтверждения от сервера.
+            await introduceWord(ex.wordId);
+            onDone(false, false);
+          }}
           className="flex-1 rounded-2xl py-4 font-extrabold text-[15px]"
           style={{ background: tokens.accentGradient, color: "#FBF9F4" }}
         >
@@ -793,16 +802,13 @@ export default function TrainerScreen({ onExit, topicFilter, placementLevel, onF
   const progress = (isPlacement || isCheckpoint) ? index / queue.length : (index % queue.length) / queue.length;
 
   // wasSkipped: пропуск НЕ трогает баллы слова вообще (ни +, ни -).
-  const handleDone = (wasCorrect, wasSkipped) => {
+  const handleDone = async (wasCorrect, wasSkipped) => {
     if (isPlacement || isCheckpoint) {
       if (wasCorrect) setScore((s) => s + 1);
     }
-    if (!isPlacement && ex.wordId && !wasSkipped) {
-      // 4 — не блокируем переход к следующему упражнению ожиданием сети, но
-      // submitAnswer теперь сам ставит ответ в очередь при сбое (см. api.js),
-      // а .catch() тут — просто страховка от неожиданных синхронных ошибок.
-      submitAnswer(ex.wordId, wasCorrect).catch(() => {});
-    }
+    const answerPromise = (!isPlacement && ex.wordId && !wasSkipped)
+      ? submitAnswer(ex.wordId, wasCorrect).catch(() => {})
+      : Promise.resolve();
     setHintBudget((b) => (b?.adError ? { ...b, adError: null } : b)); // не тянуть сообщение о рекламе в следующее упражнение
 
     // 3 — по достижении конца подборки (обычная сессия/подтема — не
@@ -811,8 +817,14 @@ export default function TrainerScreen({ onExit, topicFilter, placementLevel, onF
     // свежую с сервера. См. комментарий у loadQueue.
     const isRegularSession = !isPlacement && !isCheckpoint;
     if (isRegularSession && index + 1 >= queue.length) {
+      // 1 — раньше запрос свежей подборки запускался СРАЗУ, не дожидаясь
+      // подтверждения от submitAnswer() последнего ответа — сервер мог ещё не
+      // успеть сохранить его, и в новой подборке слово снова приходило как
+      // "новое"/недостаточно закреплённое, создавая видимость, что "ничего не
+      // меняется". Теперь ждём подтверждения перед перезапросом.
       setQueue(null);
       setIndex(0);
+      await answerPromise;
       loadQueue()
         .then((built) => { setQueue(built); setSessionComplete(built.length === 0); })
         .catch((err) => { setLoadError(String(err.message || err)); setQueue([]); setSessionComplete(false); });

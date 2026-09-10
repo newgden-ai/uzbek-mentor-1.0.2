@@ -47,6 +47,7 @@ export default function DictionaryScreen() {
   const [popover, setPopover] = useState(null);
   const [words, setWords] = useState(null); // null = загрузка
   const [error, setError] = useState(null);
+  const [selectedTopic, setSelectedTopic] = useState(null); // 4 — фильтр по теме
   const debounceRef = useRef(null);
 
   useEffect(() => {
@@ -65,10 +66,22 @@ export default function DictionaryScreen() {
     return () => clearTimeout(debounceRef.current);
   }, [query]);
 
+  // 4 — раньше в "Базе" темы нигде не собирались в список: слова были просто
+  // единым алфавитным списком, а тег темы виден только внутри уже открытой
+  // карточки слова — просмотреть/выбрать список тем было неоткуда. Собираем
+  // уникальные темы прямо из уже загруженных слов (без лишнего запроса) и
+  // даём фильтровать по ним, как чипами.
+  const topics = useMemo(() => {
+    if (!words) return [];
+    const set = new Set(words.map((w) => w.topic).filter(Boolean));
+    return [...set].sort((a, b) => a.localeCompare(b, "ru"));
+  }, [words]);
+
   const filtered = useMemo(() => {
     if (!words) return [];
-    return [...words].sort((a, b) => a[sortLang].localeCompare(b[sortLang], sortLang === "ru" ? "ru" : "en"));
-  }, [words, sortLang]);
+    const byTopic = selectedTopic ? words.filter((w) => w.topic === selectedTopic) : words;
+    return [...byTopic].sort((a, b) => a[sortLang].localeCompare(b[sortLang], sortLang === "ru" ? "ru" : "en"));
+  }, [words, sortLang, selectedTopic]);
 
 
   return (
@@ -106,6 +119,31 @@ export default function DictionaryScreen() {
             );
           })}
         </div>
+
+        {topics.length > 0 && (
+          <div className="flex items-center gap-2 mt-3 overflow-x-auto pb-1" style={{ scrollbarWidth: "none" }}>
+            <button
+              onClick={() => setSelectedTopic(null)}
+              className="shrink-0 rounded-full px-3 py-1.5 text-[12px] font-bold"
+              style={{ background: !selectedTopic ? tokens.accentGradient : tokens.card, color: !selectedTopic ? "#FBF9F4" : tokens.textSecondary }}
+            >
+              Все темы
+            </button>
+            {topics.map((t) => {
+              const isActive = selectedTopic === t;
+              return (
+                <button
+                  key={t}
+                  onClick={() => setSelectedTopic(isActive ? null : t)}
+                  className="shrink-0 rounded-full px-3 py-1.5 text-[12px] font-bold"
+                  style={{ background: isActive ? tokens.accentGradient : tokens.card, color: isActive ? "#FBF9F4" : tokens.textSecondary }}
+                >
+                  {t}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <div className="px-6 flex flex-col gap-2.5 pb-6 flex-1 overflow-y-auto">
