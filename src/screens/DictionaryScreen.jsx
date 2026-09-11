@@ -211,6 +211,11 @@ export default function DictionaryScreen() {
 
               {isOpen && (
                 <div className="px-5 pb-4 flex flex-col gap-2.5" style={{ borderTop: `1px solid ${tokens.track}` }}>
+                  {(w.examples || []).length === 0 && (
+                    <p className="text-[12.5px] pt-2.5" style={{ color: tokens.textSecondary }}>
+                      Для этого слова пока нет примеров использования
+                    </p>
+                  )}
                   {(w.examples || []).map((ex, i) => (
                     <div key={i} className="pt-2.5">
                       <div className="flex items-center gap-1.5">

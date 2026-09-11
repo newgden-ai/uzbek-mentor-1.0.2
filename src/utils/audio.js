@@ -14,17 +14,27 @@ import { useRef } from "react";
 // GitHub Pages и т.д.) возвращаются как есть — трогаем только Google Drive.
 export function normalizeAudioUrl(url) {
   if (!url) return url;
-  const trimmed = url.trim();
+  let trimmed = url.trim();
 
   const fileMatch = trimmed.match(/drive\.google\.com\/file\/d\/([^/]+)/);
-  if (fileMatch) return `https://drive.google.com/uc?export=download&id=${fileMatch[1]}`;
+  if (fileMatch) trimmed = `https://drive.google.com/uc?export=download&id=${fileMatch[1]}`;
 
   const openMatch = trimmed.match(/drive\.google\.com\/open\?id=([^&]+)/);
-  if (openMatch) return `https://drive.google.com/uc?export=download&id=${openMatch[1]}`;
+  if (openMatch) trimmed = `https://drive.google.com/uc?export=download&id=${openMatch[1]}`;
 
   const ucMatch = trimmed.match(/drive\.google\.com\/uc\?.*[?&]id=([^&]+)/);
   if (ucMatch && !/export=download/.test(trimmed)) {
-    return `https://drive.google.com/uc?export=download&id=${ucMatch[1]}`;
+    trimmed = `https://drive.google.com/uc?export=download&id=${ucMatch[1]}`;
+  }
+
+  // 3 — если сама страница открыта по https (а GitHub Pages/Telegram Mini App
+  // всегда так), а ссылка на аудио — по http://, браузер молча блокирует такой
+  // "смешанный контент" (mixed content) — ЗВУК НЕ ИГРАЕТ, и в отличие от
+  // большинства ошибок это даже не всегда попадает в console.error. Раз уж
+  // страница https, почти наверняка и сам файл доступен по https — поднимаем
+  // схему принудительно.
+  if (typeof window !== "undefined" && window.location?.protocol === "https:" && trimmed.startsWith("http://")) {
+    trimmed = "https://" + trimmed.slice("http://".length);
   }
 
   return trimmed;

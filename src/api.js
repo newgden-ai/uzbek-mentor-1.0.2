@@ -10,12 +10,35 @@ function getInitData() {
   return window.Telegram?.WebApp?.initData || "";
 }
 
+// 1 — КРИТИЧЕСКИЙ БАГ: apiGet() не имел ни обработки ошибок сети, ни тайм-аута —
+// если fetch() падал (нет сети, CORS, Apps Script медленно отвечает/квота) или
+// res.json() не мог распарсить ответ, promise просто ОТКЛОНЯЛСЯ (reject).
+// Раньше это было почти незаметно, т.к. большинство вызовов были
+// "выстрелил и забыл" (без await) — ошибка тихо проглатывалась, и то, что
+// действие не применилось, было незаметно СРАЗУ (хотя и вызывало повторы
+// потом). Но как только некоторые вызовы (introduceWord в LearnCard) стали
+// дожидаться ответа перед переходом дальше — необработанный reject стал
+// означать, что код ПОСЛЕ await просто никогда не выполнялся: кнопка
+// нажималась, а дальше ничего не происходило — то самое "зависание".
+// Теперь apiGet ВСЕГДА резолвится (либо реальными данными, либо
+// {error: "..."} ), а долгий запрос обрывается по тайм-ауту через 15 секунд
+// вместо бесконечного ожидания.
 async function apiGet(action, params = {}) {
   const url = new URL(API_URL);
   url.searchParams.set("action", action);
   Object.entries(params).forEach(([k, v]) => v != null && url.searchParams.set(k, v));
-  const res = await fetch(url.toString());
-  return res.json();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15000);
+  try {
+    const res = await fetch(url.toString(), { signal: controller.signal });
+    return await res.json();
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(`[api] ${action} не удался:`, err);
+    return { error: err?.name === "AbortError" ? "Сервер не ответил вовремя (тайм-аут)" : String(err?.message || err) };
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 // 5 — apiPost больше НЕ используется для реальных вызовов к Apps Script.
@@ -55,7 +78,17 @@ let userPromise = null;
 
 export async function getCurrentUser() {
   if (!hasApi) return { user_id: "demo", username: "denis", level: "", xp: 1240, streak: 7, weekActivity: [true, true, true, true, true, true, true] };
-  if (!userPromise) userPromise = apiGet("user", { init_data: getInitData() });
+  if (!userPromise) {
+    // 1 — если запрос сорвётся (таймаут/сеть), НЕ кешируем неудачный результат
+    // навсегда — иначе одна временная сетевая ошибка при старте ломала бы
+    // сессию до конца (следующий getCurrentUser() возвращал бы тот же
+    // {error: ...} снова и снова, ничего не делая, что выглядело бы как
+    // полное зависание приложения). Даём следующему вызову повторить попытку.
+    userPromise = apiGet("user", { init_data: getInitData() }).then((res) => {
+      if (res && res.error) userPromise = null;
+      return res;
+    });
+  }
   return userPromise;
 }
 

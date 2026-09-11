@@ -178,9 +178,10 @@ function FeedbackBar({ checked, correctText, onNext }) {
 // как показанное (introduceWord не вызывается) и возвращает его обратно в
 // подборку через несколько карточек — чтобы слово гарантированно показалось
 // ещё раз в этой же сессии, прежде чем считаться изученным.
-function LearnCard({ ex, onDone, onRepeat }) {
+function LearnCard({ ex, onDone, onRepeat, onSaveError }) {
   const example = ex.examples?.[0];
   const play = usePlayer();
+  const [busy, setBusy] = useState(false); // 1 — видимая индикация вместо "непонятного зависания" на время запроса к серверу
   return (
     <div className="flex-1 flex flex-col px-6 pt-6">
       <p className="text-xs font-bold tracking-widest uppercase" style={{ color: tokens.textSecondary }}>Новое слово</p>
@@ -207,27 +208,43 @@ function LearnCard({ ex, onDone, onRepeat }) {
       </div>
       <div className="px-2 pb-4 flex gap-2.5">
         <button
+          disabled={busy}
           onClick={() => onRepeat(ex)}
           className="flex-1 rounded-2xl py-4 font-extrabold text-[14px] flex items-center justify-center gap-1.5"
-          style={{ background: tokens.card, color: tokens.textSecondary }}
+          style={{ background: tokens.card, color: tokens.textSecondary, opacity: busy ? 0.5 : 1 }}
         >
           <RotateCcw size={15} /> Повторить
         </button>
         <button
+          disabled={busy}
           onClick={async () => {
             // 1 — раньше introduceWord() не дожидались перед переходом дальше:
             // если это было последнее слово в подборке, TrainerScreen сразу
             // запрашивал у сервера свежую подборку (см. handleDone), и та
             // запись introduceWord могла ещё не успеть сохраниться в таблице —
             // сервер отдавал слово снова как "новое" (learn), а не как
-            // упражнение. Теперь дожидаемся подтверждения от сервера.
-            await introduceWord(ex.wordId);
-            onDone(false, false);
+            // упражнение. Теперь дожидаемся подтверждения от сервера — а
+            // apiGet() (api.js) больше не может зависнуть бесконечно (тайм-аут
+            // 15с) и try/finally гарантирует, что кнопка не останется "мёртвой",
+            // даже если запрос всё же сорвётся.
+            setBusy(true);
+            try {
+              const res = await introduceWord(ex.wordId);
+              // 1 — раньше результат introduceWord() вообще не проверялся: если
+              // сервер вернул {error: ...} (например, ещё старый бэкенд без
+              // этого action, либо реальная ошибка сети), слово ВЫГЛЯДЕЛО
+              // изученным на экране, но на сервере ничего не сохранялось —
+              // и следующая подгрузка подборки просто возвращала его же снова.
+              if (res?.error) onSaveError?.(res.error);
+            } finally {
+              setBusy(false);
+              onDone(false, false);
+            }
           }}
-          className="flex-1 rounded-2xl py-4 font-extrabold text-[15px]"
-          style={{ background: tokens.accentGradient, color: "#FBF9F4" }}
+          className="flex-1 rounded-2xl py-4 font-extrabold text-[15px] flex items-center justify-center gap-1.5"
+          style={{ background: tokens.accentGradient, color: "#FBF9F4", opacity: busy ? 0.7 : 1 }}
         >
-          Знаю →
+          {busy ? <Loader2 size={16} className="animate-spin" /> : "Знаю →"}
         </button>
       </div>
     </div>
@@ -660,6 +677,15 @@ export default function TrainerScreen({ onExit, topicFilter, placementLevel, onF
   const [score, setScore] = useState(0);
   const [queue, setQueue] = useState(null);
   const [loadError, setLoadError] = useState(null);
+  // 1 — раньше ошибки от introduceWord()/submitAnswer() (например, если
+  // бэкенд ещё старый и не знает такое действие, либо реально сорвалась
+  // сеть) уходили ТОЛЬКО в console.warn — то есть были невидимы человеку без
+  // подключённого удалённого дебага. Слово тогда "как бы" отмечалось изученным
+  // на экране, но сервер это не сохранял, и это выглядело как "по кругу,
+  // ничего не меняется" без единой подсказки, что где-то реально упала ошибка.
+  // Теперь такую ошибку видно прямо в приложении баннером — можно
+  // сфотографировать/скопировать точный текст для диагностики.
+  const [saveError, setSaveError] = useState(null);
   const [sessionComplete, setSessionComplete] = useState(false); // 3 — подборка кончилась не из-за ошибки, а потому что всё пройдено
   const [hintBudget, setHintBudget] = useState(null);
   const isPlacement = Boolean(placementLevel);
@@ -807,8 +833,8 @@ export default function TrainerScreen({ onExit, topicFilter, placementLevel, onF
       if (wasCorrect) setScore((s) => s + 1);
     }
     const answerPromise = (!isPlacement && ex.wordId && !wasSkipped)
-      ? submitAnswer(ex.wordId, wasCorrect).catch(() => {})
-      : Promise.resolve();
+      ? submitAnswer(ex.wordId, wasCorrect).catch((err) => ({ error: String(err.message || err) }))
+      : Promise.resolve(null);
     setHintBudget((b) => (b?.adError ? { ...b, adError: null } : b)); // не тянуть сообщение о рекламе в следующее упражнение
 
     // 3 — по достижении конца подборки (обычная сессия/подтема — не
@@ -821,10 +847,15 @@ export default function TrainerScreen({ onExit, topicFilter, placementLevel, onF
       // подтверждения от submitAnswer() последнего ответа — сервер мог ещё не
       // успеть сохранить его, и в новой подборке слово снова приходило как
       // "новое"/недостаточно закреплённое, создавая видимость, что "ничего не
-      // меняется". Теперь ждём подтверждения перед перезапросом.
+      // меняется". Теперь ждём подтверждения перед перезапросом — и если
+      // ответ не сохранился (queued/error), показываем это явно, а не
+      // молча едем дальше как ни в чём не бывало.
       setQueue(null);
       setIndex(0);
-      await answerPromise;
+      const answerRes = await answerPromise;
+      if (answerRes?.error) {
+        setSaveError(`Последний ответ не сохранился на сервере: ${answerRes.error}${answerRes.queued ? " (отложен, отправится позже)" : ""}`);
+      }
       loadQueue()
         .then((built) => { setQueue(built); setSessionComplete(built.length === 0); })
         .catch((err) => { setLoadError(String(err.message || err)); setQueue([]); setSessionComplete(false); });
@@ -849,6 +880,18 @@ export default function TrainerScreen({ onExit, topicFilter, placementLevel, onF
     <div className="relative flex-1 flex flex-col overflow-hidden">
       {showBadge && ex.type !== "learn" && <StagePopover stage={ex.wordStage} decay={0} onClose={() => setShowBadge(false)} />}
       <TopBar progress={progress} stage={ex.stage ?? ex.wordStage ?? 0} onBadgeClick={() => setShowBadge(true)} onExit={onExit} />
+      {saveError && (
+        <div className="px-5 pb-2 shrink-0">
+          <div
+            role="button"
+            onClick={() => setSaveError(null)}
+            className="rounded-xl px-3.5 py-2.5 text-[12px] font-semibold leading-snug cursor-pointer"
+            style={{ background: `${tokens.wrong}18`, color: tokens.wrong }}
+          >
+            ⚠️ {saveError} — нажми, чтобы скрыть
+          </div>
+        </div>
+      )}
       {isPlacement && (
         <div className="px-5 pb-2 shrink-0">
           <div className="rounded-xl px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: tokens.cardActive, color: tokens.accentTeal }}>
@@ -872,7 +915,7 @@ export default function TrainerScreen({ onExit, topicFilter, placementLevel, onF
           </div>
         </div>
       )}
-      <Renderer key={index} ex={ex} onDone={handleDone} onRepeat={handleRepeatLearn} hintBudget={hintBudget} onRequestHint={requestHint} onWatchAd={watchAd} adBusy={adBusy} adAvailable={Boolean(getAdController())} />
+      <Renderer key={index} ex={ex} onDone={handleDone} onRepeat={handleRepeatLearn} onSaveError={setSaveError} hintBudget={hintBudget} onRequestHint={requestHint} onWatchAd={watchAd} adBusy={adBusy} adAvailable={Boolean(getAdController())} />
     </div>
   );
 }
